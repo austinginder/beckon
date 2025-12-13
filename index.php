@@ -775,7 +775,7 @@ if (isset($_GET['action'])) {
                 </div>
             </div>
             <div class="p-6 text-center shrink-0 flex items-center justify-center gap-3">
-                <a href="https://beckon.world/changelog" class="flex items-center gap-2 group relative">
+                <a href="https://beckon.run/changelog" class="flex items-center gap-2 group relative">
                     <img src="beckon-icon.webp" class="w-6 h-6 rounded-md shadow-sm opacity-90 group-hover:opacity-100 transition" alt="Beckon Icon">
                     <span class="text-slate-600 group-hover:text-slate-400 transition text-xs font-bold tracking-widest uppercase font-mono">v{{ version }}</span>
                     
