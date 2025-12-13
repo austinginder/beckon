@@ -2,9 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-**Beckon** is a lightweight, open-source, self-hosted Kanban board that lives in a single PHP file. 
-
-It requires no database setup, using a flat-file storage system (JSON and Markdown) to keep your data portable, human-readable, and easy to back up. The frontend is built with Vue 3 and Tailwind CSS (bundled via CDN), making deployment as simple as dropping one file onto your server.
+**Beckon** is a lightweight, open-source, self-hosted Kanban board that lives in a single PHP file. It requires no database setup, using a flat-file storage system (JSON and Markdown) to keep your data portable, human-readable, and easy to back up. The frontend is built with Vue 3 and Tailwind CSS (bundled via CDN), making deployment as simple as dropping one file onto your server.
 
 ## ✨ Features
 
@@ -13,11 +11,20 @@ It requires no database setup, using a flat-file storage system (JSON and Markdo
     * **Boards:** Organized as directories.
     * **Cards:** Stored as individual `.md` files for content and `.json` for metadata.
     * **Portability:** Easy to sync with Dropbox/Nextcloud or version control with Git.
-* **Markdown Support:** Full Markdown rendering for card descriptions with a live split-pane preview.
-* **Task Tracking:** Interactive checkboxes (`- [ ]`) in card descriptions are automatically tracked as progress bars on the board view.
+* **Smart Editor:**
+    * Full Markdown rendering with a **resizable split-pane** preview.
+    * **Drag-and-drop image uploads** directly into the editor.
+    * **Task Tracking:** Interactive checkboxes (`- [ ]`) in card descriptions are automatically tracked as progress bars on the board view.
+* **Kanban Workflow:**
+    * Drag-and-drop cards between lists.
+    * **Cross-Board Moving:** Move cards easily from one board to another via the sidebar actions.
+    * **Due Dates:** Set deadlines with visual color indicators for approaching or overdue tasks.
+* **Time Travel & Revisions:**
+    * Detailed revision history for every card description.
+    * Use the **history slider** to preview past versions and restore them with a single click.
 * **Trello Import:** Native support for importing Trello JSON exports (lists, cards, checklists, labels, and comments).
+* **User Identity:** Simple "Guest" identity settings to customize your display name and avatar color for the session.
 * **Dark Mode:** Built-in toggle for light/dark themes.
-* **Multi-Board Support:** Create multiple projects and switch between them easily.
 * **Activity Log:** Comments and activity history (moves, creations) are tracked per card.
 
 ## 🚀 Installation
