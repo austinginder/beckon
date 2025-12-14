@@ -49,7 +49,7 @@ if (isset($_GET['action'])) {
 
             // 2. Build Users Registry & Global Label Context
             $usersMap = [];
-            $globalLabelNames = $json['labelNames'] ?? []; // Capture global label semantics
+            $globalLabelNames = $json['labelNames'] ?? []; 
             
             // Helper to download avatar
             $downloadAvatar = function($id, $hash) use ($avatarDir, $slug) {
@@ -84,7 +84,7 @@ if (isset($_GET['action'])) {
             $listMap = []; 
             $cardMeta = []; 
             $archive = [];
-            $closedListIds = []; // Track closed list IDs
+            $closedListIds = []; 
 
             foreach ($json['lists'] as $l) {
                 if ($l['closed']) {
@@ -95,7 +95,7 @@ if (isset($_GET['action'])) {
                 $listMap[$l['id']] = count($lists) - 1;
             }
 
-            // 4. Process Checklists
+            // 4. Process Checklists (Group by Card ID)
             $checklists = [];
             foreach ($json['checklists'] ?? [] as $cl) $checklists[$cl['idCard']][] = $cl;
 
@@ -120,16 +120,12 @@ if (isset($_GET['action'])) {
 
                 if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
                 
-                // --- Action Type Handlers ---
-
-                // 1. Comments
                 if ($act['type'] === 'commentCard') {
                     $userId = $act['memberCreator']['id'] ?? null;
                     $userFallback = [
                         'name' => $act['memberCreator']['fullName'] ?? 'Unknown',
                         'initials' => $act['memberCreator']['initials'] ?? '?'
                     ];
-
                     $cardMeta[$cid]['comments'][] = [
                         'id' => $act['id'], 
                         'text' => $act['data']['text'], 
@@ -138,24 +134,18 @@ if (isset($_GET['action'])) {
                         'user' => $userFallback 
                     ];
                 }
-                // 2. Creation
                 elseif ($act['type'] === 'createCard') {
                     $creator = $act['memberCreator']['fullName'] ?? 'Someone';
                     $cardMeta[$cid]['activity'][] = ['text' => "Created by $creator", 'date' => $act['date']];
                 }
-                // 3. Updates (Moves, Description, Archival, Due Dates)
                 elseif ($act['type'] === 'updateCard') {
                     $actor = $act['memberCreator']['fullName'] ?? 'Someone';
-
-                    // A. List Moves
                     if (isset($act['data']['listAfter'])) {
                         $cardMeta[$cid]['activity'][] = [
                             'text' => "Moved to {$act['data']['listAfter']['name']} by $actor", 
                             'date' => $act['date']
                         ];
                     }
-                    
-                    // B. Description Revisions
                     if (isset($act['data']['old']['desc'])) {
                         array_unshift($cardMeta[$cid]['revisions'], [
                             'id' => $act['id'],
@@ -165,22 +155,16 @@ if (isset($_GET['action'])) {
                         ]);
                         $cardMeta[$cid]['activity'][] = ['text' => "Updated description by $actor", 'date' => $act['date']];
                     }
-
-                    // C. Archival History
                     if (isset($act['data']['card']['closed'])) {
                         $action = $act['data']['card']['closed'] ? 'Archived card' : 'Restored card to board';
                         $cardMeta[$cid]['activity'][] = ['text' => "$action by $actor", 'date' => $act['date']];
                     }
-
-                    // D. Due Date Changes
-                    // Note: 'old' key exists even if value was null, checking existence is safer than isset
                     if (array_key_exists('due', $act['data']['old'])) {
                         $newDue = $act['data']['card']['due'];
                         $text = $newDue ? "Changed due date to " . substr($newDue, 0, 10) : "Removed due date";
                         $cardMeta[$cid]['activity'][] = ['text' => "$text by $actor", 'date' => $act['date']];
                     }
                 }
-                // 4. Member Assignments
                 elseif ($act['type'] === 'addMemberToCard') {
                     $member = $act['member']['fullName'] ?? 'Unknown';
                     $actor = $act['memberCreator']['fullName'] ?? 'Someone';
@@ -195,16 +179,13 @@ if (isset($_GET['action'])) {
                 }
             }
 
-            // --- Build Attachment Map First (Required for Cover Images) ---
-            $attachmentMap = [];
+            // Build Attachment Map
             $attachmentMap = [];
             foreach ($json['cards'] as $cTemp) {
                 if (isset($cTemp['attachments'])) {
                     foreach ($cTemp['attachments'] as $att) {
-                        // determine extension safely
                         $ext = pathinfo($att['name'], PATHINFO_EXTENSION);
                         if (!$ext) $ext = pathinfo(parse_url($att['url'], PHP_URL_PATH), PATHINFO_EXTENSION);
-                        
                         $attachmentMap[$att['id']] = [
                             'url' => $att['url'],
                             'name' => $att['name'],
@@ -222,38 +203,53 @@ if (isset($_GET['action'])) {
             foreach ($json['cards'] as $c) {
                 // Check if card is closed OR belongs to a closed list OR is unmapped
                 $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
-                
-                // --- Extract Creation Date from Trello ID ---
-                // The first 8 hex characters of a MongoID/TrelloID are the timestamp
                 $createdTimestamp = hexdec(substr($c['id'], 0, 8));
                 $createdDate = date('c', $createdTimestamp);
 
                 $coverImagePath = null;
                 if (!empty($c['idAttachmentCover']) && isset($attachmentMap[$c['idAttachmentCover']])) {
                     $att = $attachmentMap[$c['idAttachmentCover']];
-                    
-                    // DETERMINISTIC NAMING: Use name + unique ID to prevent sort-order race conditions
                     $rawName = pathinfo($att['name'], PATHINFO_FILENAME);
                     $cleanName = preg_replace('/[^a-z0-9-]/i', '-', $rawName);
-                    
-                    // Append the ID to the filename
                     $filename = strtolower($cleanName . '-' . $att['id'] . '.' . $att['ext']);
-                    
                     $coverImagePath = "boards/$slug/uploads/$filename";
                 }
 
-                // Build Description
-                $md = $c['desc'];
-                foreach ($checklists[$c['id']] ?? [] as $cl) {
-                    $md .= "\n\n### {$cl['name']}\n";
-                    foreach ($cl['checkItems'] as $item) $md .= "- [" . ($item['state'] === 'complete' ? 'x' : ' ') . "] {$item['name']}\n";
+                // --- Process Checklists into Meta, NOT Markdown ---
+                $cardChecklists = [];
+                $checklistStats = ['total' => 0, 'done' => 0];
+                
+                if (isset($checklists[$c['id']])) {
+                    foreach ($checklists[$c['id']] as $cl) {
+                        // Sort items by position
+                        usort($cl['checkItems'], fn($a, $b) => $a['pos'] <=> $b['pos']);
+                        
+                        $items = [];
+                        foreach ($cl['checkItems'] as $item) {
+                            $items[] = [
+                                'id' => $item['id'],
+                                'name' => $item['name'],
+                                'state' => $item['state']
+                            ];
+                            $checklistStats['total']++;
+                            if ($item['state'] === 'complete') $checklistStats['done']++;
+                        }
+
+                        $cardChecklists[] = [
+                            'id' => $cl['id'],
+                            'name' => $cl['name'],
+                            'items' => $items
+                        ];
+                    }
                 }
 
-                // Process Labels with Semantic Names
+                // Use Trello description directly without appending checklists
+                $md = $c['desc'];
+
+                // Process Labels
                 $mappedLabels = [];
                 foreach ($c['labels'] ?? [] as $l) {
                     $colorKey = $l['color'] ?? 'black';
-                    
                     $finalName = $l['name'];
                     if (empty($finalName) && !empty($globalLabelNames[$colorKey])) {
                         $finalName = $globalLabelNames[$colorKey];
@@ -261,7 +257,6 @@ if (isset($_GET['action'])) {
                     if (empty($finalName)) {
                         $finalName = ucfirst($colorKey);
                     }
-
                     $mappedLabels[] = [
                         'color' => $colorMap[$colorKey] ?? 'slate',
                         'name' => $finalName
@@ -276,7 +271,8 @@ if (isset($_GET['action'])) {
                     'assignees' => $c['idMembers'] ?? [],
                     'coverImage' => $coverImagePath,
                     'created_at' => $createdDate,
-                    'subscribed' => $c['subscribed'] ?? false
+                    'subscribed' => $c['subscribed'] ?? false,
+                    'checklistStats' => $checklistStats['total'] > 0 ? $checklistStats : null
                 ];
 
                 if ($isArchived) {
@@ -292,6 +288,9 @@ if (isset($_GET['action'])) {
                 $meta['comments'] = array_reverse($meta['comments']);
                 $meta['assigned_to'] = $c['idMembers'] ?? [];
                 $meta['created_at'] = $createdDate;
+                
+                // Save structured checklists to the card's meta JSON
+                $meta['checklists'] = $cardChecklists;
                 
                 file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
             }
@@ -987,8 +986,8 @@ if (isset($_GET['action'])) {
                                         <span v-if="card.commentCount > 0" title="Comments" class="flex items-center gap-0.5">
                                             <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg> {{ card.commentCount }}
                                         </span>
-                                        <span v-if="getTaskStats(card.description).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card.description).done === getTaskStats(card.description).total}">
-                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card.description).done }}/{{ getTaskStats(card.description).total }}
+                                        <span v-if="getTaskStats(card).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card).done === getTaskStats(card).total}">
+                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
                                         </span>
                                         <span v-if="card.dueDate" class="flex items-center gap-1" :class="getDueDateColor(card.dueDate)">
                                             <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ formatDateShort(card.dueDate) }}
@@ -1032,17 +1031,32 @@ if (isset($_GET['action'])) {
                         </div>
                         <div v-else class="text-xs text-slate-500 mt-1">in list <span class="font-bold underline">{{ boardData.lists[activeCard.listIndex]?.title }}</span></div>
                     </div>
+                    
                     <div class="flex items-center gap-2">
-                        <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700" title="Toggle View (Split / Editor / Preview)">
-                            <svg v-if="splitPaneRatio === 100" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                            <svg v-else-if="splitPaneRatio === 0" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                            <svg v-else class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                        </button>
+                        
+                        <div class="relative group">
+                            <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
+                                <svg v-if="splitPaneRatio === 100" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                                <svg v-else-if="splitPaneRatio === 0" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                <svg v-else class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            </button>
+                            <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                {{ splitPaneRatio === 100 ? 'Switch to Preview' : (splitPaneRatio === 0 ? 'Switch to Split' : 'Switch to Editor') }}
+                                <div class="absolute bottom-full right-2 -mt-[1px] border-4 border-transparent border-b-slate-800"></div>
+                            </div>
+                        </div>
 
-                        <button @click="isSidebarOpen = !isSidebarOpen" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
-                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m-2 10V9a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-                        </button>
-                        <button @click="closeModal" class="text-slate-400 hover:text-red-500 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
+                        <div class="relative group">
+                            <button @click="isSidebarOpen = !isSidebarOpen" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
+                                <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m-2 10V9a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                            </button>
+                            <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                {{ isSidebarOpen ? 'Close Sidebar' : 'Open Sidebar' }}
+                                <div class="absolute bottom-full right-2 -mt-[1px] border-4 border-transparent border-b-slate-800"></div>
+                            </div>
+                        </div>
+
+                        <button @click="closeModal" class="text-slate-400 hover:text-red-500 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700" title="Close (Esc)">
                             <svg class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
                         </button>
                     </div>
@@ -1278,6 +1292,47 @@ if (isset($_GET['action'])) {
                                             :class="[`bg-${color}-500`, activeCard.data.labels?.find(l=>(l.color||l)===color) ? 'ring-2 ring-offset-1 ring-slate-400' : '']">
                                         <span v-if="activeCard.data.labels?.find(l=>(l.color||l)===color)" class="absolute inset-0 flex items-center justify-center text-white font-bold text-xs">✓</span>
                                     </button>
+                                </div>
+                            </div>
+
+                            <div v-if="activeCardMeta.checklists?.length" class="pt-4 border-t border-slate-200 dark:border-slate-700 mt-2">
+                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-3 flex justify-between items-center">
+                                    Checklists
+                                    <span class="text-[10px] bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded text-slate-600 dark:text-slate-300">
+                                        {{ Math.round((activeCard.data.checklistStats?.done || 0) / (activeCard.data.checklistStats?.total || 1) * 100) }}%
+                                    </span>
+                                </h3>
+                                
+                                <div v-for="(cl, clIdx) in activeCardMeta.checklists" :key="cl.id" class="mb-5">
+                                    <div class="flex justify-between items-end mb-1">
+                                        <div class="text-xs font-bold text-slate-700 dark:text-slate-200 truncate pr-2" :title="cl.name">{{ cl.name }}</div>
+                                        <div class="text-[10px] text-slate-400 font-mono shrink-0">
+                                            {{ cl.items.filter(i => i.state === 'complete').length }}/{{ cl.items.length }}
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="h-1 bg-slate-200 dark:bg-slate-600 rounded-full overflow-hidden mb-2">
+                                        <div class="h-full bg-blue-500 transition-all duration-300" 
+                                             :style="{ width: (cl.items.length ? (cl.items.filter(i => i.state === 'complete').length / cl.items.length * 100) : 0) + '%' }">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="space-y-1">
+                                        <div v-for="(item, itemIdx) in cl.items" :key="item.id" 
+                                             @click="toggleCheckItem(clIdx, itemIdx)"
+                                             class="flex items-start gap-2 text-xs group cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded -mx-1.5 transition-colors select-none">
+                                            
+                                            <div class="mt-0.5 w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors shrink-0"
+                                                 :class="item.state === 'complete' ? 'bg-blue-500 border-blue-500 text-white' : 'border-slate-300 dark:border-slate-500 bg-white dark:bg-slate-900 group-hover:border-blue-400'">
+                                                <svg v-if="item.state === 'complete'" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M5 13l4 4L19 7"></path></svg>
+                                            </div>
+                                            
+                                            <span class="flex-1 transition-opacity leading-snug break-words" 
+                                                  :class="{'line-through text-slate-400 dark:text-slate-500': item.state === 'complete', 'text-slate-700 dark:text-slate-300': item.state !== 'complete'}">
+                                                {{ item.name }}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -1884,6 +1939,36 @@ if (isset($_GET['action'])) {
                     });
                 };
 
+                const toggleCheckItem = (clIdx, itemIdx) => {
+                    const cl = activeCardMeta.value.checklists[clIdx];
+                    const item = cl.items[itemIdx];
+                    item.state = item.state === 'complete' ? 'incomplete' : 'complete';
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                    updateCardStats();
+                };
+
+                const updateCardStats = () => {
+                    let total = 0;
+                    let done = 0;
+                    
+                    if (activeCardMeta.value.checklists) {
+                        activeCardMeta.value.checklists.forEach(cl => {
+                            cl.items.forEach(i => {
+                                total++;
+                                if(i.state === 'complete') done++;
+                            });
+                        });
+                    }
+                    
+                    if (total > 0) {
+                        activeCard.value.data.checklistStats = { total, done };
+                    } else {
+                        activeCard.value.data.checklistStats = null;
+                    }
+                    
+                    persistLayout(); // Save the new counts to layout.json
+                };
+
                 const archiveActiveCard = () => {
                     if (!confirm("Archive this card?")) return;
                     const { id } = activeCard.value.data;
@@ -1921,10 +2006,29 @@ if (isset($_GET['action'])) {
                 const addList = () => { boardData.value.lists.push({ id: 'l'+Date.now(), title: 'New List', cards: [] }); persistLayout(); };
                 const deleteList = (i) => { if(confirm('Delete list?')) { boardData.value.lists.splice(i, 1); persistLayout(); } };
                 const addCard = (lIdx) => {
-                    const c = { id: Date.now(), title: 'New Card', description: '', labels: [], dueDate: null, assignees: [], commentCount: 0 };
+                    const now = new Date().toISOString();
+                    const c = { 
+                        id: Date.now(), 
+                        title: 'New Card', 
+                        description: '', 
+                        labels: [], 
+                        dueDate: null, 
+                        assignees: [], 
+                        commentCount: 0,
+                        created_at: now
+                    };
+                    
                     boardData.value.lists[lIdx].cards.push(c);
-                    persistLayout(); persistCardDesc(c);
-                    persistMeta(c.id, { comments: [], activity: [{ text: 'Card created', date: new Date().toISOString() }], revisions: [], assigned_to: [] });
+                    persistLayout(); 
+                    persistCardDesc(c);
+                    
+                    persistMeta(c.id, { 
+                        created_at: now,
+                        comments: [], 
+                        activity: [{ text: 'Card created', date: now }], 
+                        revisions: [], 
+                        assigned_to: [] 
+                    });
                 };
                 const filteredBoards = computed(() => {
                     if (!boardSearch.value) return availableBoards.value;
@@ -1959,7 +2063,8 @@ if (isset($_GET['action'])) {
                             comments: m.comments||[], 
                             activity: m.activity||[],
                             revisions: m.revisions||[],
-                            assigned_to: m.assigned_to||[]
+                            assigned_to: m.assigned_to||[],
+                            checklists: m.checklists||[]
                         };
                     } catch(e){}
                 };
@@ -2228,7 +2333,19 @@ if (isset($_GET['action'])) {
                         persistCardDesc(activeCard.value.data);
                     }
                 };
-                const getTaskStats = (t) => ({ total: (t?.match(/- \[[ xX]\]/g)||[]).length, done: (t?.match(/- \[[xX]\]/g)||[]).length });
+                const getTaskStats = (card) => {
+                    // Structured Data
+                    if (card.checklistStats) {
+                        return card.checklistStats;
+                    }
+                    
+                    // Fallback to Markdown regex
+                    const t = card.description || '';
+                    return { 
+                        total: (t.match(/- \[[ xX]\]/g)||[]).length, 
+                        done: (t.match(/- \[[xX]\]/g)||[]).length 
+                    };
+                };
                 const getDueDateColor = (d) => { if (!d) return ''; const diff = dayjs(d).diff(dayjs(), 'day'); return diff < 0 ? 'bg-red-100 text-red-600' : diff <= 2 ? 'bg-yellow-100 text-yellow-600' : 'bg-slate-200 text-slate-500'; };
                 const formatTime = (iso) => dayjs(iso).fromNow();
                 const formatDateShort = (iso) => dayjs(iso).format('MMM D');
@@ -2426,12 +2543,12 @@ if (isset($_GET['action'])) {
                     // --- Card Modal & Editor UI ---
                     isModalOpen, activeCard, activeCardMeta, openCardModal, closeModal, isSidebarOpen,
                     splitPaneRatio, splitPaneContainer, startResize, toggleView, editorStats,
-                    renderMarkdown, compiledMarkdown, handlePreviewClick, 
+                    renderMarkdown, compiledMarkdown, handlePreviewClick,
                     handleImageDrop, isDraggingFile, handleFileInput,
 
                     // --- Card Data & Actions ---
                     addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard,
-                    labelColors, toggleLabel, handleDueDateChange,
+                    labelColors, toggleLabel, handleDueDateChange, toggleCheckItem, updateCardStats,
                     originalDescription, revisionIndex, restoreRevision,
                     archiveCardContext, archiveActiveCard, restoreArchivedCard,
                     showCoverModalState, availableCovers, hasCover, openCoverModal, setCover, removeCover,
