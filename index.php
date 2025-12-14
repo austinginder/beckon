@@ -47,8 +47,9 @@ if (isset($_GET['action'])) {
             $avatarDir = "$targetDir/uploads/avatars";
             mkdir($avatarDir, 0755, true);
 
-            // 2. Build Users Registry (users.json)
+            // 2. Build Users Registry & Global Label Context
             $usersMap = [];
+            $globalLabelNames = $json['labelNames'] ?? []; // Capture global label semantics
             
             // Helper to download avatar
             $downloadAvatar = function($id, $hash) use ($avatarDir, $slug) {
@@ -78,21 +79,27 @@ if (isset($_GET['action'])) {
                 }
             }
             
-            // ... (Rest of Labels Mapping and Lists processing remains the same) ...
-            $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
-
-            $lists = []; $listMap = []; $cardMeta = []; $archive = [];
+            // 3. Process Lists (and track closed ones)
+            $lists = []; 
+            $listMap = []; 
+            $cardMeta = []; 
+            $archive = [];
+            $closedListIds = []; // Track closed list IDs
 
             foreach ($json['lists'] as $l) {
-                if ($l['closed']) continue;
+                if ($l['closed']) {
+                    $closedListIds[$l['id']] = true;
+                    continue;
+                }
                 $lists[] = ['id' => $l['id'], 'title' => $l['name'], 'cards' => []];
                 $listMap[$l['id']] = count($lists) - 1;
             }
 
+            // 4. Process Checklists
             $checklists = [];
             foreach ($json['checklists'] ?? [] as $cl) $checklists[$cl['idCard']][] = $cl;
 
-            // 5. Process Actions (Comments & History)
+            // 5. Process Actions (Comments, History, Revisions, Members, Dates)
             foreach (array_reverse($json['actions'] ?? []) as $act) {
                 if (!isset($act['data']['card']['id'])) continue;
                 $cid = $act['data']['card']['id'];
@@ -112,7 +119,10 @@ if (isset($_GET['action'])) {
                 }
 
                 if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
+                
+                // --- Action Type Handlers ---
 
+                // 1. Comments
                 if ($act['type'] === 'commentCard') {
                     $userId = $act['memberCreator']['id'] ?? null;
                     $userFallback = [
@@ -128,17 +138,71 @@ if (isset($_GET['action'])) {
                         'user' => $userFallback 
                     ];
                 }
-                elseif ($act['type'] === 'createCard') 
-                    $cardMeta[$cid]['activity'][] = ['text' => 'Created card', 'date' => $act['date']];
-                elseif ($act['type'] === 'updateCard' && isset($act['data']['listAfter'])) 
-                    $cardMeta[$cid]['activity'][] = ['text' => "Moved from {$act['data']['listBefore']['name']} to {$act['data']['listAfter']['name']}", 'date' => $act['date']];
+                // 2. Creation
+                elseif ($act['type'] === 'createCard') {
+                    $creator = $act['memberCreator']['fullName'] ?? 'Someone';
+                    $cardMeta[$cid]['activity'][] = ['text' => "Created by $creator", 'date' => $act['date']];
+                }
+                // 3. Updates (Moves, Description, Archival, Due Dates)
+                elseif ($act['type'] === 'updateCard') {
+                    $actor = $act['memberCreator']['fullName'] ?? 'Someone';
+
+                    // A. List Moves
+                    if (isset($act['data']['listAfter'])) {
+                        $cardMeta[$cid]['activity'][] = [
+                            'text' => "Moved to {$act['data']['listAfter']['name']} by $actor", 
+                            'date' => $act['date']
+                        ];
+                    }
+                    
+                    // B. Description Revisions
+                    if (isset($act['data']['old']['desc'])) {
+                        array_unshift($cardMeta[$cid]['revisions'], [
+                            'id' => $act['id'],
+                            'date' => $act['date'],
+                            'text' => $act['data']['old']['desc'],
+                            'user' => $actor
+                        ]);
+                        $cardMeta[$cid]['activity'][] = ['text' => "Updated description by $actor", 'date' => $act['date']];
+                    }
+
+                    // C. Archival History
+                    if (isset($act['data']['card']['closed'])) {
+                        $action = $act['data']['card']['closed'] ? 'Archived card' : 'Restored card to board';
+                        $cardMeta[$cid]['activity'][] = ['text' => "$action by $actor", 'date' => $act['date']];
+                    }
+
+                    // D. Due Date Changes
+                    // Note: 'old' key exists even if value was null, checking existence is safer than isset
+                    if (array_key_exists('due', $act['data']['old'])) {
+                        $newDue = $act['data']['card']['due'];
+                        $text = $newDue ? "Changed due date to " . substr($newDue, 0, 10) : "Removed due date";
+                        $cardMeta[$cid]['activity'][] = ['text' => "$text by $actor", 'date' => $act['date']];
+                    }
+                }
+                // 4. Member Assignments
+                elseif ($act['type'] === 'addMemberToCard') {
+                    $member = $act['member']['fullName'] ?? 'Unknown';
+                    $actor = $act['memberCreator']['fullName'] ?? 'Someone';
+                    $text = ($member === $actor) ? "Joined card" : "Added $member to card";
+                    $cardMeta[$cid]['activity'][] = ['text' => $text, 'date' => $act['date']];
+                }
+                elseif ($act['type'] === 'removeMemberFromCard') {
+                    $member = $act['member']['fullName'] ?? 'Unknown';
+                    $actor = $act['memberCreator']['fullName'] ?? 'Someone';
+                    $text = ($member === $actor) ? "Left card" : "Removed $member from card";
+                    $cardMeta[$cid]['activity'][] = ['text' => $text, 'date' => $act['date']];
+                }
             }
 
-            // ... (Rest of Card Processing logic remains the same) ...
-             usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
+            // 6. Process Cards
+            usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
             
+            $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
+
             foreach ($json['cards'] as $c) {
-                $isArchived = $c['closed'] || !isset($listMap[$c['idList']]);
+                // Check if card is closed OR belongs to a closed list OR is unmapped
+                $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
                 
                 // Build Description
                 $md = $c['desc'];
@@ -147,13 +211,22 @@ if (isset($_GET['action'])) {
                     foreach ($cl['checkItems'] as $item) $md .= "- [" . ($item['state'] === 'complete' ? 'x' : ' ') . "] {$item['name']}\n";
                 }
 
-                // Process Labels with Names
+                // Process Labels with Semantic Names
                 $mappedLabels = [];
                 foreach ($c['labels'] ?? [] as $l) {
-                    $colorName = $l['color'] ?? 'black';
-                    $finalName = !empty($l['name']) ? $l['name'] : ucfirst($colorName);
+                    $colorKey = $l['color'] ?? 'black';
+                    
+                    // Priority: Explicit Name > Global Map > Fallback Color Name
+                    $finalName = $l['name'];
+                    if (empty($finalName) && !empty($globalLabelNames[$colorKey])) {
+                        $finalName = $globalLabelNames[$colorKey];
+                    }
+                    if (empty($finalName)) {
+                        $finalName = ucfirst($colorKey);
+                    }
+
                     $mappedLabels[] = [
-                        'color' => $colorMap[$colorName] ?? 'slate',
+                        'color' => $colorMap[$colorKey] ?? 'slate',
                         'name' => $finalName
                     ]; 
                 }
@@ -653,7 +726,7 @@ if (isset($_GET['action'])) {
                     <input type="file" @change="handleImportFile" class="hidden" accept=".json">
                 </label>
 
-                <div class="relative z-40 ml-2">
+                <div class="relative z-40">
                     <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
                         Archive
