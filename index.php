@@ -267,6 +267,7 @@ if (isset($_GET['action'])) {
                     'id' => $c['id'], 
                     'title' => $c['name'],
                     'labels' => $mappedLabels,
+                    'startDate' => (isset($c['start']) && $c['start']) ? substr($c['start'], 0, 10) : null,
                     'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null,
                     'assignees' => $c['idMembers'] ?? [],
                     'coverImage' => $coverImagePath,
@@ -510,6 +511,7 @@ if (isset($_GET['action'])) {
                 foreach ($cards as &$card) {
                     $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
                     $card['labels'] = $card['labels'] ?? [];
+                    $card['startDate'] = $card['startDate'] ?? null;
                     $card['dueDate'] = $card['dueDate'] ?? null;
                     $card['assignees'] = $card['assignees'] ?? [];
                     $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true) ?? [];
@@ -989,8 +991,17 @@ if (isset($_GET['action'])) {
                                         <span v-if="getTaskStats(card).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card).done === getTaskStats(card).total}">
                                             <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
                                         </span>
-                                        <span v-if="card.dueDate" class="flex items-center gap-1" :class="getDueDateColor(card.dueDate)">
-                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ formatDateShort(card.dueDate) }}
+                                        <span v-if="card.startDate || card.dueDate" class="flex items-center gap-1" :class="card.dueDate ? getDueDateColor(card.dueDate) : 'text-slate-400'">
+                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> 
+                                            
+                                            <span v-if="card.startDate">
+                                                {{ formatDateShort(card.startDate) }} 
+                                                <span v-if="card.dueDate" class="mx-0.5">-</span>
+                                            </span>
+
+                                            <span v-if="card.dueDate">
+                                                {{ formatDateShort(card.dueDate) }}
+                                            </span>
                                         </span>
                                     </div>
                                     
@@ -1335,7 +1346,11 @@ if (isset($_GET['action'])) {
                                     </div>
                                 </div>
                             </div>
-
+                            <div>
+                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-2">Start Date</h3>
+                                <input type="date" v-model="activeCard.data.startDate" @change="handleStartDateChange" 
+                                    class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
                             <div>
                                 <h3 class="text-xs font-bold text-slate-500 uppercase mb-2">Due Date</h3>
                                 <input type="date" v-model="activeCard.data.dueDate" @change="handleDueDateChange" 
@@ -2526,6 +2541,14 @@ if (isset($_GET['action'])) {
                     editUser, updateInitials, handleAvatarUpload, saveUserEntry, loginAs,
                     syncState, syncStatusColor: computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value])),
                     syncMessage: computed(() => syncState.value.toUpperCase()),
+                    handleStartDateChange: () => {
+                        activeCardMeta.value.activity.unshift({ 
+                            text: `Start date changed`, 
+                            date: new Date().toISOString() 
+                        }); 
+                        persistMeta(activeCard.value.data.id, activeCardMeta.value); 
+                        persistLayout(); 
+                    },
 
                     // --- Board Navigation & CRUD ---
                     boardData, currentBoardId, availableBoards, selectBoard, switchBoard, handleImportFile,
