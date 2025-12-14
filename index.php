@@ -31,49 +31,101 @@ if (isset($_GET['action'])) {
             $json = json_decode(file_get_contents($_FILES['file']['tmp_name']), true);
             if (!$json) throw new Exception("Invalid JSON");
 
+            // 1. Create Board Directory
             $slug = preg_replace('/[^a-z0-9-]/i', '', strtolower($json['name'] ?? 'Imported'));
             $slug = substr($slug ?: 'board', 0, 30) . '-' . date('ymd');
-            
             $baseSlug = $slug;
             $counter = 1;
             while(file_exists(BOARDS_BASE . '/' . $slug)) {
                 $slug = $baseSlug . '-' . $counter++;
             }
-
             $targetDir = BOARDS_BASE . '/' . $slug;
             mkdir($targetDir, 0755, true);
             mkdir("$targetDir/uploads", 0755, true);
-
-            $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
-            $lists = []; $listMap = []; $cardMeta = []; $archive = [];
             
-            // Lists
+            // Avatar Directory
+            $avatarDir = "$targetDir/uploads/avatars";
+            mkdir($avatarDir, 0755, true);
+
+            // 2. Build Users Registry (users.json)
+            $usersMap = [];
+            
+            // Helper to download avatar
+            $downloadAvatar = function($id, $hash) use ($avatarDir, $slug) {
+                if (!$hash) return null;
+                $url = "https://trello-members.s3.amazonaws.com/{$id}/{$hash}/170.png";
+                $filename = "{$id}.png";
+                $content = @file_get_contents($url);
+                if ($content) {
+                    file_put_contents("$avatarDir/$filename", $content);
+                    return "boards/$slug/uploads/avatars/$filename";
+                }
+                return null;
+            };
+
+            // Priority 1: Global Members List
+            if (isset($json['members']) && is_array($json['members'])) {
+                foreach ($json['members'] as $m) {
+                    $localAvatar = $downloadAvatar($m['id'], $m['avatarHash'] ?? null);
+                    $usersMap[$m['id']] = [
+                        'id' => $m['id'],
+                        'username' => $m['username'] ?? '',
+                        'fullName' => $m['fullName'] ?? 'Unknown',
+                        'initials' => $m['initials'] ?? '?',
+                        'avatarHash' => $m['avatarHash'] ?? null,
+                        'avatarFile' => $localAvatar
+                    ];
+                }
+            }
+            
+            // ... (Rest of Labels Mapping and Lists processing remains the same) ...
+            $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
+
+            $lists = []; $listMap = []; $cardMeta = []; $archive = [];
+
             foreach ($json['lists'] as $l) {
                 if ($l['closed']) continue;
                 $lists[] = ['id' => $l['id'], 'title' => $l['name'], 'cards' => []];
                 $listMap[$l['id']] = count($lists) - 1;
             }
 
-            // Checklists
             $checklists = [];
             foreach ($json['checklists'] ?? [] as $cl) $checklists[$cl['idCard']][] = $cl;
 
-            // Activity/Comments
+            // 5. Process Actions (Comments & History)
             foreach (array_reverse($json['actions'] ?? []) as $act) {
                 if (!isset($act['data']['card']['id'])) continue;
                 $cid = $act['data']['card']['id'];
+                
+                // Capture users from comments not in global list
+                if (isset($act['memberCreator']['id']) && !isset($usersMap[$act['memberCreator']['id']])) {
+                    $m = $act['memberCreator'];
+                    $localAvatar = $downloadAvatar($m['id'], $m['avatarHash'] ?? null);
+                    $usersMap[$m['id']] = [
+                        'id' => $m['id'],
+                        'username' => $m['username'] ?? '',
+                        'fullName' => $m['fullName'] ?? 'Unknown',
+                        'initials' => $m['initials'] ?? '?',
+                        'avatarHash' => $m['avatarHash'] ?? null,
+                        'avatarFile' => $localAvatar
+                    ];
+                }
+
                 if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
 
                 if ($act['type'] === 'commentCard') {
-                     $user = [
+                    $userId = $act['memberCreator']['id'] ?? null;
+                    $userFallback = [
                         'name' => $act['memberCreator']['fullName'] ?? 'Unknown',
                         'initials' => $act['memberCreator']['initials'] ?? '?'
                     ];
+
                     $cardMeta[$cid]['comments'][] = [
                         'id' => $act['id'], 
                         'text' => $act['data']['text'], 
                         'date' => $act['date'],
-                        'user' => $user
+                        'user_id' => $userId, 
+                        'user' => $userFallback 
                     ];
                 }
                 elseif ($act['type'] === 'createCard') 
@@ -82,20 +134,36 @@ if (isset($_GET['action'])) {
                     $cardMeta[$cid]['activity'][] = ['text' => "Moved from {$act['data']['listBefore']['name']} to {$act['data']['listAfter']['name']}", 'date' => $act['date']];
             }
 
-            // Cards
-            usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
+            // ... (Rest of Card Processing logic remains the same) ...
+             usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
+            
             foreach ($json['cards'] as $c) {
                 $isArchived = $c['closed'] || !isset($listMap[$c['idList']]);
+                
+                // Build Description
                 $md = $c['desc'];
                 foreach ($checklists[$c['id']] ?? [] as $cl) {
                     $md .= "\n\n### {$cl['name']}\n";
                     foreach ($cl['checkItems'] as $item) $md .= "- [" . ($item['state'] === 'complete' ? 'x' : ' ') . "] {$item['name']}\n";
                 }
 
+                // Process Labels with Names
+                $mappedLabels = [];
+                foreach ($c['labels'] ?? [] as $l) {
+                    $colorName = $l['color'] ?? 'black';
+                    $finalName = !empty($l['name']) ? $l['name'] : ucfirst($colorName);
+                    $mappedLabels[] = [
+                        'color' => $colorMap[$colorName] ?? 'slate',
+                        'name' => $finalName
+                    ]; 
+                }
+
                 $cardData = [
-                    'id' => $c['id'], 'title' => $c['name'],
-                    'labels' => array_map(fn($l) => $colorMap[$l['color']] ?? 'slate', $c['labels'] ?? []),
-                    'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null
+                    'id' => $c['id'], 
+                    'title' => $c['name'],
+                    'labels' => $mappedLabels,
+                    'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null,
+                    'assignees' => $c['idMembers'] ?? [] 
                 ];
 
                 if ($isArchived) {
@@ -105,14 +173,45 @@ if (isset($_GET['action'])) {
                 }
                 
                 file_put_contents("$targetDir/{$c['id']}.md", $md);
+                
                 $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
                 $meta['activity'] = array_reverse($meta['activity']);
                 $meta['comments'] = array_reverse($meta['comments']);
+                $meta['assigned_to'] = $c['idMembers'] ?? []; 
+                
                 file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
             }
 
-            file_put_contents("$targetDir/layout.json", json_encode(['title' => $json['name'], 'lists' => $lists, 'archive' => $archive], JSON_PRETTY_PRINT));
+            file_put_contents("$targetDir/layout.json", json_encode([
+                'title' => $json['name'], 
+                'lists' => $lists, 
+                'archive' => $archive,
+                'trello_id' => $json['id']
+            ], JSON_PRETTY_PRINT));
+
+            file_put_contents("$targetDir/users.json", json_encode($usersMap, JSON_PRETTY_PRINT));
+
             echo json_encode(['status' => 'imported', 'board' => $slug]);
+            exit;
+        }
+
+        if ($action === 'save_users') {
+            file_put_contents("$boardDir/users.json", json_encode($input['users'], JSON_PRETTY_PRINT));
+            echo json_encode(['status' => 'saved']);
+            exit;
+        }
+
+        if ($action === 'upload_avatar') {
+            if (!isset($_FILES['file'])) throw new Exception('No file');
+            $avatarDir = "$boardDir/uploads/avatars";
+            if (!is_dir($avatarDir)) mkdir($avatarDir, 0755, true);
+
+            $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
+            $cleanName = uniqid('u_'); 
+            $filename = "$cleanName.$ext";
+            
+            move_uploaded_file($_FILES['file']['tmp_name'], "$avatarDir/$filename");
+            echo json_encode(['url' => "boards/$boardId/uploads/avatars/$filename"]);
             exit;
         }
 
@@ -138,7 +237,6 @@ if (isset($_GET['action'])) {
             
             $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME));
             $filename = strtolower($cleanName . '.' . $ext);
-
             $counter = 1;
             while(file_exists("$uploadDir/$filename")) {
                 $filename = strtolower($cleanName . '-' . $counter++ . '.' . $ext);
@@ -146,21 +244,18 @@ if (isset($_GET['action'])) {
 
             $ch = curl_init($remoteUrl);
             $fp = fopen("$uploadDir/$filename", 'wb');
-            
             curl_setopt($ch, CURLOPT_FILE, $fp);
             curl_setopt($ch, CURLOPT_HEADER, 0);
             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
             curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Beckon-Importer)'); 
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); 
             curl_setopt($ch, CURLOPT_FAILONERROR, true);
-            
             // Apply cookies if provided
             if ($cookieString) {
                 curl_setopt($ch, CURLOPT_COOKIE, $cookieString);
             }
             
             curl_exec($ch);
-            
             if (curl_errno($ch)) {
                 $error_msg = curl_error($ch);
                 curl_close($ch);
@@ -207,7 +302,6 @@ if (isset($_GET['action'])) {
             $title = $input['title'] ?? 'New Board';
             $slug = $input['slug'] ?: preg_replace('/[^a-z0-9-]/', '', strtolower($title));
             if (!$slug) $slug = 'board-' . date('ymd');
-            
             // Unique slug check
             $baseSlug = $slug;
             $counter = 1;
@@ -219,6 +313,7 @@ if (isset($_GET['action'])) {
             mkdir($p, 0755, true);
             mkdir("$p/uploads", 0755, true); // Create uploads dir
             file_put_contents("$p/layout.json", json_encode(['title' => $title, 'lists' => []], JSON_PRETTY_PRINT));
+            file_put_contents("$p/users.json", json_encode([], JSON_PRETTY_PRINT));
             echo json_encode(['status' => 'ok', 'id' => $slug]);
             exit;
         }
@@ -230,7 +325,7 @@ if (isset($_GET['action'])) {
                 $files = new RecursiveIteratorIterator(
                     new RecursiveDirectoryIterator($p, RecursiveDirectoryIterator::SKIP_DOTS),
                     RecursiveIteratorIterator::CHILD_FIRST
-                );
+                  );
 
                 foreach ($files as $fileinfo) {
                     $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink');
@@ -250,12 +345,10 @@ if (isset($_GET['action'])) {
             $newSlug = preg_replace('/[^a-z0-9-]/i', '-', strtolower($newTitle));
             $newSlug = preg_replace('/-+/', '-', $newSlug); // remove duplicate dashes
             $newSlug = trim($newSlug, '-');
-            
             if (!$newSlug) throw new Exception("Invalid title for URL generation");
 
             $oldPath = getBoardPath($oldId);
             $newPath = BOARDS_BASE . '/' . $newSlug;
-
             // Update title inside layout.json regardless of folder rename
             $layout = json_decode(file_get_contents("$oldPath/layout.json"), true);
             $layout['title'] = $newTitle;
@@ -264,7 +357,6 @@ if (isset($_GET['action'])) {
             // If the slug is different, we need to move the folder
             if ($oldId !== $newSlug) {
                 if (file_exists($newPath)) throw new Exception("A board with this name already exists");
-
                 // 1. Scan all .md files in the board and fix image links
                 $files = glob("$oldPath/*.md");
                 foreach ($files as $file) {
@@ -278,7 +370,6 @@ if (isset($_GET['action'])) {
 
                 // 2. Rename the directory
                 rename($oldPath, $newPath);
-                
                 echo json_encode(['status' => 'renamed', 'id' => $newSlug, 'name' => $newTitle]);
             } else {
                 echo json_encode(['status' => 'updated', 'id' => $oldId, 'name' => $newTitle]);
@@ -288,29 +379,35 @@ if (isset($_GET['action'])) {
 
         if ($action === 'load') {
             $data = json_decode(@file_get_contents("$boardDir/layout.json"), true) ?? [];
+            $users = json_decode(@file_get_contents("$boardDir/users.json"), true) ?? [];
+            
             if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
-            if (!isset($data['archive'])) $data['archive'] = []; // Ensure archive exists
+            if (!isset($data['archive'])) $data['archive'] = [];
+            // Ensure archive exists
             if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
-
             // Helper to hydrate
             $hydrate = function(&$cards) use ($boardDir) {
                 foreach ($cards as &$card) {
                     $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
                     $card['labels'] = $card['labels'] ?? [];
                     $card['dueDate'] = $card['dueDate'] ?? null;
+                    $card['assignees'] = $card['assignees'] ?? [];
+                    $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true) ?? [];
+                    $card['commentCount'] = isset($meta['comments']) ? count($meta['comments']) : 0;
                 }
             };
 
             foreach ($data['lists'] as &$list) $hydrate($list['cards']);
             $hydrate($data['archive']);
-
+            
+            $data['users'] = $users; // Send users registry to frontend
             echo json_encode($data);
             exit;
         }
 
         if ($action === 'load_card_meta') {
             $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
-            echo json_encode(array_merge(['comments' => [], 'activity' => [], 'revisions' => []], $meta));
+            echo json_encode(array_merge(['comments' => [], 'activity' => [], 'revisions' => [], 'assigned_to' => []], $meta));
             exit;
         }
 
@@ -342,7 +439,6 @@ if (isset($_GET['action'])) {
             $targetPath = getBoardPath($targetId);
             
             if (!file_exists($targetPath)) throw new Exception("Target board not found");
-            
             // 1. Load Source Layout (Current Board)
             $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
             $cardData = null;
@@ -359,17 +455,14 @@ if (isset($_GET['action'])) {
             }
             
             if (!$cardData) throw new Exception("Card not found");
-            
             // 2. Load Target Layout
             $targetLayout = json_decode(@file_get_contents("$targetPath/layout.json"), true) ?? [];
             if (empty($targetLayout['lists'])) {
                 $targetLayout['lists'] = [['id' => 'l1', 'title' => 'Inbox', 'cards' => []]];
             }
             if (!isset($targetLayout['title'])) $targetLayout['title'] = $targetId;
-            
             // Add to the top of the first list in target
             array_unshift($targetLayout['lists'][0]['cards'], $cardData);
-            
             // 3. Move Files (.md and .json)
             $files = ["$cardId.md", "$cardId.json"];
             foreach ($files as $f) {
@@ -381,7 +474,6 @@ if (isset($_GET['action'])) {
             // NOTE: Images embedded in the MD file are NOT moved automatically.
             // They will still point to boards/OLD/uploads/. 
             // In a future update, we could parse and move them, but cross-board linking is valid.
-            
             // 4. Save both Layouts
             file_put_contents("$boardDir/layout.json", json_encode($sourceLayout, JSON_PRETTY_PRINT));
             file_put_contents("$targetPath/layout.json", json_encode($targetLayout, JSON_PRETTY_PRINT));
@@ -400,7 +492,7 @@ if (isset($_GET['action'])) {
             exit;
         }
 
-        // New Revision Handler
+        // Revision Handler
         if ($action === 'save_revision') {
             $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
             $meta['revisions'] = $meta['revisions'] ?? [];
@@ -411,7 +503,6 @@ if (isset($_GET['action'])) {
                 'text' => $input['text'],
                 'user' => $input['user'] ?? 'Unknown'
             ]);
-
             if (count($meta['revisions']) > 50) $meta['revisions'] = array_slice($meta['revisions'], 0, 50);
 
             file_put_contents("$boardDir/{$input['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
@@ -428,7 +519,6 @@ if (isset($_GET['action'])) {
 
         if ($action === 'upload') {
             if (!isset($_FILES['file'])) throw new Exception('No file');
-            
             $uploadDir = "$boardDir/uploads";
             if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
 
@@ -446,7 +536,6 @@ if (isset($_GET['action'])) {
             }
             
             move_uploaded_file($_FILES['file']['tmp_name'], "$uploadDir/$filename");
-            
             // Return path including board slug so it's portable
             echo json_encode(['url' => "boards/$boardId/uploads/$filename"]);
             exit;
@@ -557,42 +646,127 @@ if (isset($_GET['action'])) {
                     <div class="w-2 h-2 rounded-full" :class="syncStatusColor"></div> {{ syncMessage }}
                 </div>
             </div>
+            
             <div class="flex gap-2 items-center">
                 <label class="cursor-pointer text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg> Import
                     <input type="file" @change="handleImportFile" class="hidden" accept=".json">
                 </label>
+
                 <div class="relative z-40 ml-2">
-                <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
-                    Archive
-                    <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ boardData.archive.length }}</span>
+                    <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                        Archive
+                        <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ boardData.archive.length }}</span>
+                    </button>
+
+                    <div v-if="isArchiveOpen" class="absolute top-full right-0 mt-2 w-80 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-right flex flex-col max-h-[500px]">
+                        <div class="p-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                            <input 
+                                ref="archiveSearchInput"
+                                v-model="archiveSearch" 
+                                placeholder="Search archived cards..." 
+                                class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 px-3 py-2 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-700 dark:text-slate-200"
+                            >
+                        </div>
+                        <div class="flex-1 overflow-y-auto">
+                            <div v-if="filteredArchive.length === 0" class="p-4 text-center text-slate-500 text-sm italic">
+                                {{ boardData.archive?.length ? 'No matches found.' : 'Archive is empty.' }}
+                            </div>
+                            <div v-for="(card, index) in filteredArchive" :key="card.id" 
+                                 @click="openCardModal('archive', boardData.archive.indexOf(card)); isArchiveOpen = false"
+                                 class="p-3 border-b border-slate-50 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer group">
+                                <div class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1 group-hover:text-blue-600">{{ card.title }}</div>
+                                <div class="text-xs text-slate-400 truncate">{{ card.description?.slice(0, 60) }}...</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="isArchiveOpen" @click="isArchiveOpen = false" class="fixed inset-0 z-[-1] cursor-default"></div>
+                </div>
+
+                <button @click="openUsersModal" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                    Users
+                    <span v-if="Object.keys(boardData.users || {}).length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ Object.keys(boardData.users || {}).length }}</span>
                 </button>
 
-                <div v-if="isArchiveOpen" class="absolute top-full right-0 mt-2 w-80 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-right flex flex-col max-h-[500px]">
-                    <div class="p-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
-                        <input 
-                            ref="archiveSearchInput"
-                            v-model="archiveSearch" 
-                            placeholder="Search archived cards..." 
-                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 px-3 py-2 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-700 dark:text-slate-200"
-                        >
-                    </div>
-                    <div class="flex-1 overflow-y-auto">
-                        <div v-if="filteredArchive.length === 0" class="p-4 text-center text-slate-500 text-sm italic">
-                            {{ boardData.archive?.length ? 'No matches found.' : 'Archive is empty.' }}
+                <div v-if="isUsersModalOpen" class="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4 backdrop-blur-sm" @click.self="isUsersModalOpen = false">
+                    <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col h-[70vh]">
+                        <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
+                            <h3 class="font-bold text-slate-700 dark:text-slate-200">User Management</h3>
+                            <button @click="isUsersModalOpen = false" class="text-slate-400 hover:text-red-500"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                         </div>
-                        <div v-for="(card, index) in filteredArchive" :key="card.id" 
-                             @click="openCardModal('archive', boardData.archive.indexOf(card)); isArchiveOpen = false"
-                             class="p-3 border-b border-slate-50 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer group">
-                            <div class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1 group-hover:text-blue-600">{{ card.title }}</div>
-                            <div class="text-xs text-slate-400 truncate">{{ card.description?.slice(0, 60) }}...</div>
+                        
+                        <div class="flex-1 flex overflow-hidden">
+                            <div class="flex-1 overflow-y-auto p-4 border-r dark:border-slate-700" v-if="!editingUser">
+                                <div class="grid grid-cols-1 gap-2">
+                                    <div @click="createNewUser" class="p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center justify-center gap-2 text-slate-500 transition">
+                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg> Create New User
+                                    </div>
+                                    
+                                    <div v-for="u in boardData.users" :key="u.id" class="p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600 flex justify-between items-center group">
+                                        <div class="flex items-center gap-3">
+                                            <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-600 flex items-center justify-center text-sm font-bold text-slate-600 dark:text-slate-300 overflow-hidden shrink-0">
+                                                <img v-if="u.avatarFile" :src="u.avatarFile" class="w-full h-full object-cover">
+                                                <span v-else>{{ u.initials }}</span>
+                                            </div>
+                                            <div>
+                                                <div class="font-bold text-slate-800 dark:text-slate-200 text-sm">{{ u.fullName }}</div>
+                                                <div class="text-[10px] text-slate-400 font-mono">{{ u.username || 'No Username' }}</div>
+                                            </div>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <button @click="loginAs(u)" class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded hover:bg-green-200 border border-green-200 transition" v-if="currentUser.id !== u.id">Login As</button>
+                                            <span v-else class="text-[10px] bg-slate-200 text-slate-500 px-2 py-1 rounded font-bold">YOU</span>
+                                            <button @click="editUser(u)" class="text-xs bg-white dark:bg-slate-600 text-slate-600 dark:text-slate-300 px-2 py-1 rounded border border-slate-200 dark:border-slate-500 hover:border-blue-500 transition">Edit</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="flex-1 p-6 overflow-y-auto" v-if="editingUser">
+                                <h4 class="text-sm font-bold text-slate-500 uppercase mb-4">{{ editingUser.id ? 'Edit User' : 'New User' }}</h4>
+                                
+                                <div class="flex justify-center mb-6">
+                                    <div class="relative group cursor-pointer w-24 h-24" @click="$refs.avatarInput.click()">
+                                        <div class="w-24 h-24 rounded-full bg-slate-200 dark:bg-slate-600 flex items-center justify-center text-2xl font-bold text-slate-400 overflow-hidden ring-4 ring-slate-100 dark:ring-slate-700">
+                                            <img v-if="editingUser.avatarFile" :src="editingUser.avatarFile" class="w-full h-full object-cover">
+                                            <span v-else>{{ editingUser.initials || '?' }}</span>
+                                        </div>
+                                        <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition text-white text-xs font-bold">
+                                            Change
+                                        </div>
+                                        <input type="file" ref="avatarInput" class="hidden" accept="image/*" @change="handleAvatarUpload">
+                                    </div>
+                                </div>
+
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Full Name</label>
+                                        <input v-model="editingUser.fullName" @input="updateInitials" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none">
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Username</label>
+                                            <input v-model="editingUser.username" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Initials</label>
+                                            <input v-model="editingUser.initials" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-center font-mono text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mt-8 flex justify-end gap-2">
+                                    <button @click="editingUser = null" class="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition">Cancel</button>
+                                    <button @click="saveUserEntry" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-2 rounded shadow-lg text-sm transition">Save User</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div v-if="isArchiveOpen" @click="isArchiveOpen = false" class="fixed inset-0 z-[-1] cursor-default"></div>
-            </div>
-                <button @click="darkMode = !darkMode" class="text-slate-400 hover:text-white transition p-1.5 rounded hover:bg-slate-800">
+
+                <button @click="darkMode = !darkMode" class="text-slate-400 hover:text-white transition p-1.5 rounded hover:bg-slate-800 ml-auto">
                     <svg v-if="darkMode" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                     <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
                 </button>
@@ -644,19 +818,42 @@ if (isset($_GET['action'])) {
                                 @dragover.stop.prevent="onCardDragOver($event, listIndex, cardIndex)"
                                 @click="openCardModal(listIndex, cardIndex)"
                                 class="bg-white dark:bg-slate-700 p-3 rounded shadow-sm border border-slate-200 dark:border-slate-600 hover:shadow-md cursor-pointer transition group relative hover:border-blue-400 mb-2">
-                                <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap"><span v-for="c in card.labels" :key="c" :class="`bg-${c}-500`" class="h-2 w-8 rounded-full block"></span></div>
+                                
+                                <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap">
+                                    <span v-for="l in card.labels" :key="l.name || l" 
+                                          :class="`bg-${(l.color || l)}-500`" 
+                                          class="h-2 w-8 rounded-full block" 
+                                          :title="l.name || l">
+                                    </span>
+                                </div>
+                                
                                 <div class="text-sm text-slate-800 dark:text-slate-100 mb-2">{{ card.title }}</div>
-                                <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
-                                    <span v-if="card.description"><svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg></span>
-                                    <span v-if="hasAttachment(card.description)" title="Has Attachments">
-                                        <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
-                                    </span>
-                                    <span v-if="getTaskStats(card.description).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card.description).done === getTaskStats(card.description).total}">
-                                        <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card.description).done }}/{{ getTaskStats(card.description).total }}
-                                    </span>
-                                    <span v-if="card.dueDate" class="flex items-center gap-1" :class="getDueDateColor(card.dueDate)">
-                                        <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ formatDateShort(card.dueDate) }}
-                                    </span>
+                                
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
+                                        <span v-if="card.description"><svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg></span>
+                                        <span v-if="hasAttachment(card.description)" title="Has Attachments">
+                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                                        </span>
+                                        <span v-if="card.commentCount > 0" title="Comments" class="flex items-center gap-0.5">
+                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg> {{ card.commentCount }}
+                                        </span>
+                                        <span v-if="getTaskStats(card.description).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card.description).done === getTaskStats(card.description).total}">
+                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card.description).done }}/{{ getTaskStats(card.description).total }}
+                                        </span>
+                                        <span v-if="card.dueDate" class="flex items-center gap-1" :class="getDueDateColor(card.dueDate)">
+                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ formatDateShort(card.dueDate) }}
+                                        </span>
+                                    </div>
+                                    
+                                    <div v-if="card.assignees?.length" class="flex -space-x-2 overflow-hidden">
+                                        <div v-for="uid in card.assignees" :key="uid" 
+                                             class="inline-block h-5 w-5 rounded-full ring-2 ring-white dark:ring-slate-700 bg-slate-200 dark:bg-slate-600 flex items-center justify-center text-[8px] font-bold text-slate-600 dark:text-slate-300"
+                                             :title="getUserName(uid)">
+                                            <img v-if="getUserAvatar(uid)" :src="getUserAvatar(uid)" class="h-full w-full rounded-full object-cover">
+                                            <span v-else>{{ getUserInitials(uid) }}</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             
@@ -703,8 +900,9 @@ if (isset($_GET['action'])) {
 
                 <div class="flex-1 flex overflow-hidden">
                     <div class="flex-1 flex flex-col min-w-0 overflow-hidden" :class="{'border-r border-slate-200 dark:border-slate-700': isSidebarOpen}">
-                        <div class="flex-1 flex min-h-0 relative" ref="splitPaneContainer">
-    
+                        
+                        <div v-show="!isActivityMaximized" class="flex-1 flex min-h-0 relative" ref="splitPaneContainer">
+                            
                             <div class="flex flex-col border-r border-slate-100 dark:border-slate-700 overflow-hidden" 
                                 :style="{ width: splitPaneRatio + '%' }">
                                 <div class="bg-slate-50 dark:bg-slate-900 px-4 py-2 border-b dark:border-slate-700 flex justify-between items-center text-xs font-bold text-slate-500 transition-colors shrink-0">
@@ -748,10 +946,10 @@ if (isset($_GET['action'])) {
                         </div>
 
                         <div class="border-t border-slate-200 dark:border-slate-700 flex flex-col bg-white dark:bg-slate-800 transition-all duration-300 ease-in-out"
-                             :class="isActivityOpen ? 'h-1/3' : 'h-10 shrink-0'">
+                             :class="isActivityMaximized ? 'flex-1 h-full' : (isActivityOpen ? 'h-1/2' : 'h-12 shrink-0')">
                             
                             <div class="px-4 py-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center text-xs font-bold text-slate-500 transition-colors cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800"
-                                 @click="isActivityOpen = !isActivityOpen">
+                                 @click="isActivityOpen = !isActivityOpen; if(!isActivityOpen) isActivityMaximized = false">
                                 
                                 <div class="flex gap-4">
                                     <button @click.stop="activityTab='comments'; isActivityOpen=true" 
@@ -768,10 +966,20 @@ if (isset($_GET['action'])) {
                                     </button>
                                 </div>
 
-                                <button class="text-slate-400 hover:text-blue-500 transition-transform duration-300" 
-                                        :class="{'rotate-180': !isActivityOpen}">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                                </button>
+                                <div class="flex items-center gap-2">
+                                    <button v-if="isActivityOpen" 
+                                            @click.stop="isActivityMaximized = !isActivityMaximized"
+                                            class="text-slate-400 hover:text-blue-500 p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700"
+                                            :title="isActivityMaximized ? 'Minimize' : 'Maximize'">
+                                        <svg v-if="!isActivityMaximized" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 11l7-7 7 7M5 19l7-7 7 7"></path></svg>
+                                        <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 13l-7 7-7-7M19 5l-7 7-7-7"></path></svg>
+                                    </button>
+
+                                    <button class="text-slate-400 hover:text-blue-500 transition-transform duration-300" 
+                                            :class="{'rotate-180': !isActivityOpen}">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                    </button>
+                                </div>
                             </div>
 
                             <div v-show="isActivityOpen" class="flex-1 overflow-y-auto p-4 space-y-4">
@@ -779,15 +987,21 @@ if (isset($_GET['action'])) {
                                     <div class="flex-1 space-y-4 overflow-y-auto mb-4">
                                         <div v-if="!activeCardMeta.comments.length" class="text-center text-slate-400 text-sm mt-4">No comments.</div>
                                         <div v-for="c in activeCardMeta.comments" :key="c.id" class="flex gap-3 text-sm group/comment">
-                                            <div :class="`bg-${c.user?.color || 'slate'}-200 dark:bg-${c.user?.color || 'slate'}-700 text-${c.user?.color || 'slate'}-600 dark:text-${c.user?.color || 'slate'}-300`" 
+                                            
+                                            <div v-if="c.user_id && getUserAvatar(c.user_id)" class="w-8 h-8 rounded-full shrink-0 ring-2 ring-white dark:ring-slate-800 overflow-hidden">
+                                                <img :src="getUserAvatar(c.user_id)" :alt="getUserInitials(c.user_id)" class="w-full h-full object-cover">
+                                            </div>
+                                            <div v-else :class="`bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300`" 
                                                 class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ring-2 ring-white dark:ring-slate-800">
-                                                {{ c.user?.initials || 'U' }}
+                                                {{ getUserInitials(c.user_id) || c.user?.initials || 'U' }}
                                             </div>
                                             
                                             <div class="flex-1 bg-slate-50 dark:bg-slate-700 p-3 rounded-lg border border-slate-100 dark:border-slate-600 dark:text-slate-200 relative">
                                                 <div class="flex justify-between items-baseline mb-2">
                                                     <div class="flex items-center gap-2">
-                                                        <span class="font-bold text-xs text-slate-700 dark:text-slate-300">{{ c.user?.name || 'Unknown' }}</span>
+                                                        <span class="font-bold text-xs text-slate-700 dark:text-slate-300">
+                                                            {{ getUserName(c.user_id) || c.user?.name || 'Unknown' }}
+                                                        </span>
                                                         <span class="text-[10px] text-slate-400 font-mono uppercase">{{ formatTime(c.date) }} <span v-if="c.editedDate" title="Edited">*</span></span>
                                                     </div>
                                                     
@@ -826,7 +1040,8 @@ if (isset($_GET['action'])) {
                                 </div>
                                 <div v-if="activityTab==='revisions'" class="flex flex-col h-full">
                                     <div v-if="!activeCardMeta.revisions?.length" class="text-center text-slate-400 text-sm mt-4">
-                                        No revision history yet. <br><span class="text-xs">Revisions are created when you change a card and close it.</span>
+                                        No revision history yet.
+                                        <br><span class="text-xs">Revisions are created when you change a card and close it.</span>
                                     </div>
                                     <div v-else class="flex flex-col gap-4">
                                         <div class="bg-slate-100 dark:bg-slate-700 p-4 rounded-lg border border-slate-200 dark:border-slate-600">
@@ -871,29 +1086,6 @@ if (isset($_GET['action'])) {
                                 </div>
                             </div>
                         </div>
-                    </div>
-                    <div v-if="isSidebarOpen" class="w-64 bg-slate-50 dark:bg-slate-900 p-4 space-y-6 overflow-y-auto shrink-0 border-l border-slate-200 dark:border-slate-700 transition-colors">
-                        <div><h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Labels</h3><div class="grid grid-cols-4 gap-2"><button v-for="color in labelColors" :key="color" @click="toggleLabel(color)" :class="[`bg-${color}-500`, activeCard.data.labels?.includes(color) ? 'ring-2 ring-offset-1 ring-slate-400 scale-110' : 'opacity-70 hover:opacity-100']" class="h-6 w-full rounded shadow-sm transition"></button></div></div>
-                        <div><h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Due Date</h3><input type="date" v-model="activeCard.data.dueDate" @change="handleDueDateChange" class="w-full border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 rounded px-2 py-1 text-sm text-slate-600 focus:ring-blue-500"></div>
-                        <div>
-                            <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Move Card</h3>
-                            <select @change="moveCardToBoard($event)" 
-                                    class="w-full border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 rounded px-2 py-1 text-sm text-slate-600 focus:ring-blue-500 outline-none cursor-pointer">
-                                <option value="" selected disabled>Select Board...</option>
-                                <option v-for="b in availableBoards.filter(x => x.id !== currentBoardId)" 
-                                        :key="b.id" 
-                                        :value="b.id">
-                                    {{ b.name }}
-                                </option>
-                            </select>
-                        </div>
-                        <div><h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Actions</h3>
-                        <button v-if="activeCard.listIndex !== 'archive'" @click="archiveActiveCard" class="w-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-sm py-2 rounded border border-slate-200 dark:border-slate-600 transition text-left px-3 mb-2 flex items-center gap-2">
-                            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
-                            Archive Card
-                        </button>
-                        <button @click="deleteActiveCard" class="w-full bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 text-sm py-2 rounded border border-red-200 dark:border-red-900/50 transition text-left px-3">Delete Card</button></div>
-                        <div class="text-[10px] text-slate-400 text-center mt-10">Card ID: {{ activeCard.data.id }}</div>
                     </div>
                 </div>
             </div>
@@ -1102,14 +1294,15 @@ if (isset($_GET['action'])) {
                 marked.setOptions({ gfm: true, breaks: true });
                 const labelColors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink', 'slate'];
                 const version = '<?php echo BECKON_VERSION; ?>';
+                
                 const darkMode = ref(localStorage.getItem('beckon_darkMode') === 'true');
                 const currentBoardId = ref(localStorage.getItem('beckon_last_board') || '');
                 const availableBoards = ref([]);
-                const boardData = ref({ title: 'Loading...', lists: [], archive: [] });
+                const boardData = ref({ title: 'Loading...', lists: [], archive: [], users: [] });
                 const syncState = ref('synced'); 
                 const isModalOpen = ref(false);
                 const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
-                const activeCardMeta = ref({ comments: [], activity: [], revisions: [] });
+                const activeCardMeta = ref({ comments: [], activity: [], revisions: [], assigned_to: [] });
                 const activityTab = ref('comments');
                 const newComment = ref('');
                 const editingCommentId = ref(null);
@@ -1118,13 +1311,14 @@ if (isset($_GET['action'])) {
                 const dragTarget = ref(null);
                 const isSidebarOpen = ref(false);
                 const isActivityOpen = ref(localStorage.getItem('beckon_activity_open') !== 'false');
+                const isActivityMaximized = ref(false);
                 const showBoardSelector = ref(false);
                 const splitPaneRatio = ref(50); // Default 50%
                 const splitPaneContainer = ref(null);
                 const isResizing = ref(false);
                 const boardSearch = ref('');
                 const boardSearchInput = ref(null); // Ref for the search input
-                const isBoardSwitcherOpen = ref(false); // New state for dropdown
+                const isBoardSwitcherOpen = ref(false);
                 const showRenameModal = ref(false);
                 const tempBoardTitle = ref('');
                 const showCreateBoardModal = ref(false);
@@ -1147,10 +1341,10 @@ if (isset($_GET['action'])) {
                 const importProgress = ref({ current: 0, total: 0, status: '' });
                 const curlInput = ref('');
                 const hasAttachment = (text) => text && text.indexOf('/uploads/') !== -1;
-
-                // Revisions State
                 const originalDescription = ref('');
                 const revisionIndex = ref(-1); 
+                const isUsersModalOpen = ref(false);
+                const editingUser = ref(null);
 
                 let debounceTimer = null;
 
@@ -1171,22 +1365,19 @@ if (isset($_GET['action'])) {
                         return await res.json();
                     } catch (e) { syncState.value = 'offline'; throw e; }
                 };
-
                 const saveLocal = () => localStorage.setItem(`beckon_${currentBoardId.value}`, JSON.stringify(boardData.value));
                 const persistLayout = () => { saveLocal(); api('save_layout', boardData.value).then(() => { const b = availableBoards.value.find(b=>b.id===currentBoardId.value); if(b) b.name=boardData.value.title; }).catch(()=>{}); };
                 const persistCardDesc = (c) => { if(c.id) { saveLocal(); api('save_card', {id: c.id, description: c.description}).catch(()=>{}); } };
                 const persistMeta = (id, meta) => { if(id) api('save_card_meta', {id, meta}).catch(()=>{}); };
-
                 const loadData = async () => {
-                    try { const data = await api('load'); if(data.lists) { boardData.value = data; saveLocal(); return; } } catch(e){}
+                    try { const data = await api('load');
+                    if(data.lists) { boardData.value = data; saveLocal(); return; } } catch(e){}
                     const local = localStorage.getItem(`beckon_${currentBoardId.value}`);
-                    boardData.value = local ? JSON.parse(local) : { lists: [{ id: 'l1', title: 'Start', cards: [] }] };
+                    boardData.value = local ? JSON.parse(local) : { lists: [{ id: 'l1', title: 'Start', cards: [] }], users: [] };
                 };
-
                 const currentUser = ref(JSON.parse(localStorage.getItem('beckon_user')) || { 
                     name: 'Guest', initials: 'G', color: 'slate' 
                 });
-
                 const saveUser = () => {
                     const parts = currentUser.value.name.trim().split(' ');
                     currentUser.value.initials = parts.length > 1 ? (parts[0][0] + parts[parts.length-1][0]).toUpperCase() : currentUser.value.name.slice(0,2).toUpperCase();
@@ -1195,9 +1386,9 @@ if (isset($_GET['action'])) {
                 const fetchBoards = async () => { try { availableBoards.value = (await (await fetch('?action=list_boards')).json()).boards; } catch(e){} };
                 const switchBoard = async () => { clearTimeout(debounceTimer); localStorage.setItem('beckon_last_board', currentBoardId.value); await loadData(); };
                 const selectBoard = async (id) => { 
-                    currentBoardId.value = id; 
+                    currentBoardId.value = id;
                     boardSearch.value = ''; // Clear search on select
-                    await switchBoard(); 
+                    await switchBoard();
                     showBoardSelector.value = false;
                     isBoardSwitcherOpen.value = false;
                 };
@@ -1214,24 +1405,19 @@ if (isset($_GET['action'])) {
                         });
                     }
                 };
-
                 const saveBoardTitle = async () => {
                     if (!tempBoardTitle.value.trim()) return;
-                    
                     try {
                         const res = await api('rename_board', { 
                             board: currentBoardId.value, 
                             title: tempBoardTitle.value 
                         });
-                        
                         // Update local state
                         boardData.value.title = res.name;
-                        
                         // Handle ID change (rename folder)
                         const oldId = currentBoardId.value;
                         if (res.id !== oldId) {
                             currentBoardId.value = res.id;
-                            
                             // Update URL params without reload
                             const url = new URL(window.location);
                             url.searchParams.set('board', res.id);
@@ -1254,7 +1440,6 @@ if (isset($_GET['action'])) {
                         alert(e.message);
                     }
                 };
-
                 const handleImportFile = (e) => {
                     const file = e.target.files[0];
                     if (!file) return;
@@ -1263,10 +1448,8 @@ if (isset($_GET['action'])) {
                     reader.onload = (evt) => {
                         try {
                             const json = JSON.parse(evt.target.result);
-                            
                             // Extract Attachments for the Queue
                             const attachments = [];
-                            
                             // Trello stores cards in json.cards
                             json.cards.forEach(c => {
                                 if (c.attachments && c.attachments.length > 0) {
@@ -1282,7 +1465,6 @@ if (isset($_GET['action'])) {
                                     });
                                 }
                             });
-
                             // Set Meta for Preview
                             importMeta.value = {
                                 boardName: json.name || 'Imported Board',
@@ -1293,7 +1475,6 @@ if (isset($_GET['action'])) {
                                 actions: json.actions || [],
                                 attachments: attachments
                             };
-
                             importStep.value = 'preview';
                             showImportModal.value = true;
                             
@@ -1326,24 +1507,22 @@ if (isset($_GET['action'])) {
                             lists: importMeta.value.lists,
                             cards: importMeta.value.cards.map(c => ({ ...c, attachments: [] })), 
                             checklists: importMeta.value.checklists,
-                            actions: importMeta.value.actions
+                            actions: importMeta.value.actions,
+                            members: importMeta.value.members || [], // Ensure members are passed
+                            labelNames: importMeta.value.labelNames || [] // Ensure labels are passed
                         };
-
                         const blob = new Blob([JSON.stringify(structurePayload)], { type: "application/json" });
                         const fd = new FormData();
                         fd.append('file', blob, 'import.json');
-
                         const res = await (await fetch(`?action=import_trello`, { method:'POST', body:fd })).json();
                         
                         if (!res.board) throw new Error("Board creation failed");
-                        
                         const newBoardSlug = res.board;
                         importProgress.value.current = 1;
 
                         // Step 2: Process Attachments with Cookies
                         for (const [index, att] of importMeta.value.attachments.entries()) {
                             importProgress.value.status = `Downloading attachment ${index + 1} of ${importMeta.value.attachments.length}...`;
-                            
                             await api('import_attachment', {
                                 board: newBoardSlug,
                                 card: att.cardId,
@@ -1355,32 +1534,27 @@ if (isset($_GET['action'])) {
                             importProgress.value.current++;
                         }
 
-                        // ... (Completion logic remains the same) ...
                         importStep.value = 'complete';
                         importProgress.value.status = 'Done!';
                         
                         await fetchBoards();
                         currentBoardId.value = newBoardSlug;
                         await switchBoard();
-
                         setTimeout(() => { showImportModal.value = false; curlInput.value = ''; }, 1500);
-
                     } catch (err) {
                         alert("Import Error: " + err.message);
                         showImportModal.value = false;
                     }
                 };
-
                 const createBoard = async () => {
                     if (!newBoardTitle.value.trim()) return;
-                    
                     const title = newBoardTitle.value;
                     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
                     
                     await api('create_board', {title, slug}); 
                     await fetchBoards(); 
                     
-                    currentBoardId.value = slug; 
+                    currentBoardId.value = slug;
                     await switchBoard();
                     
                     // Reset and close
@@ -1390,7 +1564,7 @@ if (isset($_GET['action'])) {
                 };
                 const deleteBoard = async () => { 
                     if(confirm("Delete Board?")) { 
-                        await api('delete_board', {board: currentBoardId.value}); 
+                        await api('delete_board', {board: currentBoardId.value});
                         await fetchBoards();
                         
                         if (availableBoards.value.length > 0) {
@@ -1405,21 +1579,17 @@ if (isset($_GET['action'])) {
                         }
                     } 
                 };
-
                 const moveCardToBoard = async (e) => {
                     const targetBoardId = e.target.value;
                     const targetBoardName = availableBoards.value.find(b => b.id === targetBoardId)?.name || 'target board';
-
                     if (!confirm(`Move this card to "${targetBoardName}"?`)) {
                         e.target.value = ""; // Reset dropdown if cancelled
                         return;
                     }
 
                     const { id } = activeCard.value.data;
-                    
                     try {
                         await api('move_card_to_board', { id, target_board: targetBoardId });
-
                         if (activeCard.value.listIndex === 'archive') {
                             boardData.value.archive.splice(activeCard.value.cardIndex, 1);
                         } else {
@@ -1428,17 +1598,14 @@ if (isset($_GET['action'])) {
                         
                         // Remove card from local UI immediately
                         boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
-                        
                         // Update local storage so the card doesn't reappear on refresh
                         saveLocal();
-                        
                         closeModal();
                     } catch (err) {
                         alert("Failed to move card: " + err.message);
                         e.target.value = ""; // Reset dropdown on failure
                     }
                 };
-
                 const archiveCardContext = (lIdx, cIdx) => {
                     const card = boardData.value.lists[lIdx].cards[cIdx];
                     if (!confirm(`Archive "${card.title}"?`)) return;
@@ -1449,7 +1616,6 @@ if (isset($_GET['action'])) {
                     
                     // 2. Save
                     persistLayout();
-                    
                     // 3. Log Activity
                     api('load_card_meta', {id: card.id}).then(m => {
                         m.activity = m.activity || [];
@@ -1468,7 +1634,6 @@ if (isset($_GET['action'])) {
                     
                     // 2. Save & Close
                     persistLayout();
-                    
                     // 3. Log
                     activeCardMeta.value.activity.unshift({ text: 'Archived card', date: new Date().toISOString() });
                     persistMeta(id, activeCardMeta.value);
@@ -1488,7 +1653,6 @@ if (isset($_GET['action'])) {
                     
                     // 3. Save
                     persistLayout();
-                    
                     // 4. Log
                     activeCardMeta.value.activity.unshift({ text: 'Restored card from archive', date: new Date().toISOString() });
                     persistMeta(card.id, activeCardMeta.value);
@@ -1497,18 +1661,16 @@ if (isset($_GET['action'])) {
                 const addList = () => { boardData.value.lists.push({ id: 'l'+Date.now(), title: 'New List', cards: [] }); persistLayout(); };
                 const deleteList = (i) => { if(confirm('Delete list?')) { boardData.value.lists.splice(i, 1); persistLayout(); } };
                 const addCard = (lIdx) => {
-                    const c = { id: Date.now(), title: 'New Card', description: '', labels: [], dueDate: null };
+                    const c = { id: Date.now(), title: 'New Card', description: '', labels: [], dueDate: null, assignees: [], commentCount: 0 };
                     boardData.value.lists[lIdx].cards.push(c);
                     persistLayout(); persistCardDesc(c);
-                    persistMeta(c.id, { comments: [], activity: [{ text: 'Card created', date: new Date().toISOString() }], revisions: [] });
+                    persistMeta(c.id, { comments: [], activity: [{ text: 'Card created', date: new Date().toISOString() }], revisions: [], assigned_to: [] });
                 };
-
                 const filteredBoards = computed(() => {
                     if (!boardSearch.value) return availableBoards.value;
                     const q = boardSearch.value.toLowerCase();
                     return availableBoards.value.filter(b => b.name.toLowerCase().includes(q) || b.id.toLowerCase().includes(q));
                 });
-
                 const filteredArchive = computed(() => {
                     if (!boardData.value.archive) return [];
                     const q = archiveSearch.value.toLowerCase();
@@ -1517,33 +1679,30 @@ if (isset($_GET['action'])) {
                         (c.description || '').toLowerCase().includes(q)
                     );
                 });
-
                 const toggleArchive = () => {
                     isArchiveOpen.value = !isArchiveOpen.value;
                     if (isArchiveOpen.value) {
                         nextTick(() => archiveSearchInput.value?.focus());
                     }
                 };
-
                 const openCardModal = async (lIdx, cIdx) => {
                     const isArchived = lIdx === 'archive';
                     const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
                     activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: card };
                     originalDescription.value = card.description || ''; 
                     revisionIndex.value = -1;
-                    isSidebarOpen.value = false; isModalOpen.value = true; 
-                    activeCardMeta.value = { comments: [], activity: [], revisions: [] };
-                    
+                    isSidebarOpen.value = false; isModalOpen.value = true;
+                    activeCardMeta.value = { comments: [], activity: [], revisions: [], assigned_to: [] };
                     if(card.id) try { 
-                        const m = await api('load_card_meta', {id: card.id}); 
+                        const m = await api('load_card_meta', {id: card.id});
                         activeCardMeta.value = { 
                             comments: m.comments||[], 
                             activity: m.activity||[],
-                            revisions: m.revisions||[]
-                        }; 
+                            revisions: m.revisions||[],
+                            assigned_to: m.assigned_to||[]
+                        };
                     } catch(e){}
                 };
-
                 const closeModal = () => { 
                     // Check if description changed (or if we restored an old version)
                     if (activeCard.value.data.description !== originalDescription.value) {
@@ -1555,7 +1714,6 @@ if (isset($_GET['action'])) {
                             text: originalDescription.value, // Save the state we are leaving behind
                             user: currentUser.value.name
                         };
-
                         // 2. Add to local state (Top of list)
                         activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
                         activeCardMeta.value.revisions.unshift(newRev);
@@ -1570,7 +1728,6 @@ if (isset($_GET['action'])) {
                             text: 'Modified description (Revision saved)', 
                             date: new Date().toISOString() 
                         });
-
                         // 5. Save everything in ONE request to prevent data loss
                         persistMeta(activeCard.value.data.id, activeCardMeta.value);
                     }
@@ -1589,7 +1746,6 @@ if (isset($_GET['action'])) {
                         cIdx
                     };
                 };
-
                 const closeContextMenu = () => {
                     contextMenu.value.show = false;
                 };
@@ -1601,14 +1757,13 @@ if (isset($_GET['action'])) {
                     const newCard = JSON.parse(JSON.stringify(original));
                     newCard.id = Date.now(); // Generate new ID
                     newCard.title += ' (Copy)';
-                    
                     // Insert immediately after original
                     boardData.value.lists[lIdx].cards.splice(cIdx + 1, 0, newCard);
                     persistLayout();
                     
                     // If original had a description, save it to the new ID
                     if (original.description) {
-                        newCard.description = original.description; 
+                        newCard.description = original.description;
                         persistCardDesc(newCard);
                     }
                     
@@ -1616,7 +1771,8 @@ if (isset($_GET['action'])) {
                     persistMeta(newCard.id, { 
                         comments: [], 
                         activity: [{ text: 'Card duplicated', date: new Date().toISOString() }], 
-                        revisions: [] 
+                        revisions: [],
+                        assigned_to: []
                     });
                 };
 
@@ -1638,7 +1794,8 @@ if (isset($_GET['action'])) {
                         boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
                     }
 
-                    persistLayout(); api('delete_card', { id }); isModalOpen.value = false;
+                    persistLayout();
+                    api('delete_card', { id }); isModalOpen.value = false;
                 };
 
                 const onCardDragOver = (e, l, c) => {
@@ -1667,16 +1824,32 @@ if (isset($_GET['action'])) {
                             persistMeta(card.id, m);
                         });
                     }
-                    dragSource.value = null; dragTarget.value = null; persistLayout();
+                    dragSource.value = null;
+                    dragTarget.value = null; persistLayout();
                 };
 
-                const toggleLabel = (c) => { const l = activeCard.value.data.labels; const i = l.indexOf(c); i > -1 ? l.splice(i, 1) : l.push(c); persistLayout(); };
+                const toggleLabel = (c) => { 
+                    const l = activeCard.value.data.labels || []; 
+                    // Check if label exists by color (or string match if legacy)
+                    const existingIdx = l.findIndex(x => (x.color || x) === c);
+                    
+                    if (existingIdx > -1) {
+                        l.splice(existingIdx, 1);
+                    } else {
+                        // Add new label object
+                        l.push({ color: c, name: c.charAt(0).toUpperCase() + c.slice(1) });
+                    }
+                    activeCard.value.data.labels = l;
+                    persistLayout(); 
+                };
                 const handleDueDateChange = () => { activeCardMeta.value.activity.unshift({ text: `Due date changed`, date: new Date().toISOString() }); persistMeta(activeCard.value.data.id, activeCardMeta.value); persistLayout(); };
-
                 const renderMarkdown = (text) => marked.parse(text || '').replace(/disabled=""/g, '');
                 const deleteComment = (commentId) => {
                     if(!confirm('Delete this comment?')) return;
                     activeCardMeta.value.comments = activeCardMeta.value.comments.filter(c => c.id !== commentId);
+                    if (activeCard.value.data && activeCard.value.data.commentCount > 0) {
+                        activeCard.value.data.commentCount--;
+                    }
                     persistMeta(activeCard.value.data.id, activeCardMeta.value);
                 };
                 const startEditComment = (c) => { editingCommentId.value = c.id; editCommentText.value = c.text; };
@@ -1687,8 +1860,20 @@ if (isset($_GET['action'])) {
                 };
                 const addComment = () => {
                     if (!newComment.value.trim()) return;
-                    activeCardMeta.value.comments.unshift({ id: Date.now(), text: newComment.value, date: new Date().toISOString(), user: { ...currentUser.value } });
-                    newComment.value = ''; persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                    activeCardMeta.value.comments.unshift({ 
+                        id: Date.now(), 
+                        text: newComment.value, 
+                        date: new Date().toISOString(), 
+                        user_id: currentUser.value.id,
+                        user: { ...currentUser.value } 
+                    });
+                    
+                    if (activeCard.value.data) {
+                        activeCard.value.data.commentCount = (activeCard.value.data.commentCount || 0) + 1;
+                    }
+
+                    newComment.value = ''; 
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
                 };
                 const isDraggingFile = ref(false);
 
@@ -1697,7 +1882,6 @@ if (isset($_GET['action'])) {
                     if (!file) return;
                     // Optimistic UI: Reset drag state immediately
                     isDraggingFile.value = false;
-                    
                     const fd = new FormData(); 
                     fd.append('file', file);
                     
@@ -1731,22 +1915,21 @@ if (isset($_GET['action'])) {
                         uploadFile(f);
                     }
                 };
-
                 const restoreRevision = () => {
                     if (revisionIndex.value > -1 && confirm("Restore this version?")) {
-                        activeCard.value.data.description = activeCardMeta.value.revisions[revisionIndex.value].text;                        
+                        activeCard.value.data.description = activeCardMeta.value.revisions[revisionIndex.value].text;
                         revisionIndex.value = -1;
                         debouncedSaveCard();
                     }
                 };
-
                 const compiledMarkdown = computed(() => {
                     const text = revisionIndex.value > -1 ? activeCardMeta.value.revisions[revisionIndex.value].text : activeCard.value.data.description;
                     return marked.parse(text || '').replace(/disabled=""/g, '').replace(/disabled/g, '');
                 });
                 const debouncedSaveCard = () => { saveLocal(); syncState.value='saving'; clearTimeout(debounceTimer); debounceTimer = setTimeout(() => { persistCardDesc(activeCard.value.data); syncState.value='synced'; }, 1000); };
                 const handlePreviewClick = (e) => {
-                    if (revisionIndex.value > -1) return; // Disable checkboxes during preview
+                    if (revisionIndex.value > -1) return;
+                    // Disable checkboxes during preview
                     if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
                         const all = Array.from(document.querySelectorAll('.markdown-body input[type="checkbox"]'));
                         let c = 0; const idx = all.indexOf(e.target);
@@ -1754,7 +1937,6 @@ if (isset($_GET['action'])) {
                         persistCardDesc(activeCard.value.data);
                     }
                 };
-
                 const getTaskStats = (t) => ({ total: (t?.match(/- \[[ xX]\]/g)||[]).length, done: (t?.match(/- \[[xX]\]/g)||[]).length });
                 const getDueDateColor = (d) => { if (!d) return ''; const diff = dayjs(d).diff(dayjs(), 'day'); return diff < 0 ? 'bg-red-100 text-red-600' : diff <= 2 ? 'bg-yellow-100 text-yellow-600' : 'bg-slate-200 text-slate-500'; };
                 const formatTime = (iso) => dayjs(iso).fromNow();
@@ -1767,7 +1949,6 @@ if (isset($_GET['action'])) {
                     const readTime = Math.ceil(words / 200);
                     return { words, readTime };
                 });
-
                 const startResize = () => {
                     isResizing.value = true;
                     document.body.style.cursor = 'col-resize';
@@ -1783,22 +1964,18 @@ if (isset($_GET['action'])) {
                     window.removeEventListener('mousemove', handleResize);
                     window.removeEventListener('mouseup', stopResize);
                 };
-
                 const handleResize = (e) => {
                     if (!splitPaneContainer.value) return;
                     const rect = splitPaneContainer.value.getBoundingClientRect();
                     const x = e.clientX - rect.left;
-                    
                     // Calculate percentage
                     let newRatio = (x / rect.width) * 100;
-                    
                     // Clamp between 0 and 100
                     if (newRatio < 0) newRatio = 0;
                     if (newRatio > 100) newRatio = 100;
                     
                     splitPaneRatio.value = newRatio;
                 };
-
                 const toggleView = () => {
                     // Logic:
                     // 1. If currently split 50/50 -> Go to Markdown Only (100)
@@ -1812,6 +1989,99 @@ if (isset($_GET['action'])) {
                     } else {
                         splitPaneRatio.value = 50;
                     }
+                };
+
+                // ---- Helpers for Users/Avatars ----
+                const getUser = (id) => boardData.value.users?.[id] || null;
+
+                const getUserAvatar = (id) => {
+                    const u = getUser(id);
+                    if (!u) return null;
+                    if (u.avatarFile) return u.avatarFile; // Local file priority
+                    if (u.avatarHash) return `https://trello-members.s3.amazonaws.com/${u.id}/${u.avatarHash}/170.png`;
+                    return null;
+                };
+
+                const getUserInitials = (id) => {
+                    const u = getUser(id);
+                    if (u && u.initials) return u.initials;
+                    return null;
+                };
+
+                const getUserName = (id) => {
+                    const u = getUser(id);
+                    if (u && u.fullName) return u.fullName;
+                    return null;
+                }
+
+                // --- User Management Logic ---
+                const openUsersModal = () => {
+                    isUsersModalOpen.value = true;
+                    editingUser.value = null;
+                };
+
+                const createNewUser = () => {
+                    editingUser.value = {
+                        id: 'u_' + Date.now(),
+                        fullName: '',
+                        username: '',
+                        initials: '',
+                        avatarFile: null
+                    };
+                };
+
+                const editUser = (user) => {
+                    editingUser.value = JSON.parse(JSON.stringify(user)); // Deep copy
+                };
+
+                const updateInitials = () => {
+                    if (!editingUser.value.fullName) return;
+                    const parts = editingUser.value.fullName.trim().split(' ');
+                    editingUser.value.initials = parts.length > 1 
+                        ? (parts[0][0] + parts[parts.length-1][0]).toUpperCase() 
+                        : editingUser.value.fullName.slice(0,2).toUpperCase();
+                };
+
+                const handleAvatarUpload = async (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    
+                    const fd = new FormData();
+                    fd.append('file', file);
+                    
+                    try {
+                        const res = await (await fetch(`?action=upload_avatar&board=${currentBoardId.value}`, {method:'POST', body:fd})).json();
+                        if (res.url) {
+                            editingUser.value.avatarFile = res.url;
+                        }
+                    } catch(err) {
+                        alert("Upload failed");
+                    }
+                };
+
+                const saveUserEntry = async () => {
+                    if (!editingUser.value.fullName) return alert("Name required");
+                    
+                    // Update local state
+                    if (!boardData.value.users) boardData.value.users = {};
+                    boardData.value.users[editingUser.value.id] = editingUser.value;
+                    
+                    // Persist
+                    await api('save_users', { users: boardData.value.users });
+                    editingUser.value = null;
+                };
+
+                const loginAs = (user) => {
+                    // Switch identity
+                    currentUser.value = {
+                        name: user.fullName,
+                        initials: user.initials,
+                        color: 'blue', // Default color for managed users
+                        id: user.id // Track the ID
+                    };
+                    saveUser(); // Save to localStorage
+                    isUsersModalOpen.value = false;
+                    alert(`Now logged in as ${user.fullName}`);
                 };
 
                 onMounted(async () => { 
@@ -1844,6 +2114,8 @@ if (isset($_GET['action'])) {
                 return {
                     // --- Core App State & User ---
                     version, currentUser, saveUser, darkMode,
+                    isUsersModalOpen, openUsersModal, editingUser, createNewUser, 
+                    editUser, updateInitials, handleAvatarUpload, saveUserEntry, loginAs,
                     syncState, syncStatusColor: computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value])),
                     syncMessage: computed(() => syncState.value.toUpperCase()),
 
@@ -1877,11 +2149,12 @@ if (isset($_GET['action'])) {
                     cloneCard, deleteCardContext,
 
                     // --- Activity & Comments ---
-                    isActivityOpen, activityTab, newComment, addComment, deleteComment,
+                    isActivityOpen, isActivityMaximized, activityTab, newComment, addComment, deleteComment,
                     editingCommentId, editCommentText, startEditComment, saveEditComment,
 
                     // --- Utilities & Formatters ---
                     getTaskStats, getDueDateColor, formatTime, formatDateShort, hasAttachment,
+                    getUserAvatar, getUserInitials, getUserName,
 
                     // --- Archive Support ---
                     toggleArchive, isArchiveOpen, archiveSearch, archiveSearchInput, filteredArchive
