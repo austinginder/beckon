@@ -1426,20 +1426,42 @@ if (isset($_GET['action'])) {
                 });
 
                 return {
-                    version, currentUser, saveUser, editingCommentId, editCommentText, renderMarkdown,
-                    boardSearch, isBoardSwitcherOpen, toggleBoardSwitcher, boardSearchInput,
-                    filteredBoards, showRenameModal, tempBoardTitle, openRenameModal, saveBoardTitle,
-                    deleteComment, startEditComment, saveEditComment, toggleView, showCreateBoardModal, newBoardTitle,
-                    boardData, currentBoardId, availableBoards, syncState, isModalOpen, activeCard, activeCardMeta, handleImageDrop, isDraggingFile,
-                    showBoardSelector, selectBoard, labelColors, activityTab, newComment, dragTarget, isSidebarOpen, isActivityOpen, darkMode,
-                    addList, deleteList, addCard, openCardModal, closeModal, deleteActiveCard, splitPaneRatio, splitPaneContainer, startResize,
-                    toggleLabel, handleDueDateChange, addComment, importTrello, persistLayout, switchBoard, createBoard, deleteBoard, moveCardToBoard,
-                    startDrag, onDrop, onCardDragOver, onListDragOver, handlePreviewClick, debouncedSaveCard, compiledMarkdown, handleFileInput,
+                    // --- Core App State & User ---
+                    version, currentUser, saveUser, darkMode,
+                    syncState, syncStatusColor: computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value])),
+                    syncMessage: computed(() => syncState.value.toUpperCase()),
+
+                    // --- Board Navigation & CRUD ---
+                    boardData, currentBoardId, availableBoards, selectBoard, switchBoard, importTrello,
+                    showBoardSelector, boardSearch, boardSearchInput, filteredBoards, isBoardSwitcherOpen, toggleBoardSwitcher,
+                    showCreateBoardModal, newBoardTitle, createBoard,
+                    showRenameModal, tempBoardTitle, openRenameModal, saveBoardTitle, deleteBoard,
+
+                    // --- Lists & Drag-and-Drop ---
+                    addList, deleteList, persistLayout,
+                    dragTarget, startDrag, onDrop, onCardDragOver, onListDragOver,
+
+                    // --- Card Modal & Editor UI ---
+                    isModalOpen, activeCard, activeCardMeta, openCardModal, closeModal, isSidebarOpen,
+                    splitPaneRatio, splitPaneContainer, startResize, toggleView, editorStats,
+                    renderMarkdown, compiledMarkdown, handlePreviewClick, 
+                    handleImageDrop, isDraggingFile, handleFileInput,
+
+                    // --- Card Data & Actions ---
+                    addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard,
+                    labelColors, toggleLabel, handleDueDateChange,
                     originalDescription, revisionIndex, restoreRevision,
-                    contextMenu, showContextMenu, closeContextMenu, cloneCard, deleteCardContext,
-                    getTaskStats, getDueDateColor, formatTime, formatDateShort, editorStats,
-                    syncStatusColor: computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value])),
-                    syncMessage: computed(() => syncState.value.toUpperCase())
+
+                    // --- Context Menu ---
+                    contextMenu, showContextMenu, closeContextMenu, 
+                    cloneCard, deleteCardContext,
+
+                    // --- Activity & Comments ---
+                    isActivityOpen, activityTab, newComment, addComment, deleteComment,
+                    editingCommentId, editCommentText, startEditComment, saveEditComment,
+
+                    // --- Utilities & Formatters ---
+                    getTaskStats, getDueDateColor, formatTime, formatDateShort
                 };
             }
         }).mount('#app');
