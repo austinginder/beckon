@@ -195,15 +195,53 @@ if (isset($_GET['action'])) {
                 }
             }
 
+            // --- Build Attachment Map First (Required for Cover Images) ---
+            $attachmentMap = [];
+            $attachmentMap = [];
+            foreach ($json['cards'] as $cTemp) {
+                if (isset($cTemp['attachments'])) {
+                    foreach ($cTemp['attachments'] as $att) {
+                        // determine extension safely
+                        $ext = pathinfo($att['name'], PATHINFO_EXTENSION);
+                        if (!$ext) $ext = pathinfo(parse_url($att['url'], PHP_URL_PATH), PATHINFO_EXTENSION);
+                        
+                        $attachmentMap[$att['id']] = [
+                            'url' => $att['url'],
+                            'name' => $att['name'],
+                            'ext' => $ext,
+                            'id' => $att['id']
+                        ];
+                    }
+                }
+            }
+
             // 6. Process Cards
             usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
-            
             $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
 
             foreach ($json['cards'] as $c) {
                 // Check if card is closed OR belongs to a closed list OR is unmapped
                 $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
                 
+                // --- Extract Creation Date from Trello ID ---
+                // The first 8 hex characters of a MongoID/TrelloID are the timestamp
+                $createdTimestamp = hexdec(substr($c['id'], 0, 8));
+                $createdDate = date('c', $createdTimestamp);
+
+                $coverImagePath = null;
+                if (!empty($c['idAttachmentCover']) && isset($attachmentMap[$c['idAttachmentCover']])) {
+                    $att = $attachmentMap[$c['idAttachmentCover']];
+                    
+                    // DETERMINISTIC NAMING: Use name + unique ID to prevent sort-order race conditions
+                    $rawName = pathinfo($att['name'], PATHINFO_FILENAME);
+                    $cleanName = preg_replace('/[^a-z0-9-]/i', '-', $rawName);
+                    
+                    // Append the ID to the filename
+                    $filename = strtolower($cleanName . '-' . $att['id'] . '.' . $att['ext']);
+                    
+                    $coverImagePath = "boards/$slug/uploads/$filename";
+                }
+
                 // Build Description
                 $md = $c['desc'];
                 foreach ($checklists[$c['id']] ?? [] as $cl) {
@@ -216,7 +254,6 @@ if (isset($_GET['action'])) {
                 foreach ($c['labels'] ?? [] as $l) {
                     $colorKey = $l['color'] ?? 'black';
                     
-                    // Priority: Explicit Name > Global Map > Fallback Color Name
                     $finalName = $l['name'];
                     if (empty($finalName) && !empty($globalLabelNames[$colorKey])) {
                         $finalName = $globalLabelNames[$colorKey];
@@ -236,7 +273,10 @@ if (isset($_GET['action'])) {
                     'title' => $c['name'],
                     'labels' => $mappedLabels,
                     'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null,
-                    'assignees' => $c['idMembers'] ?? [] 
+                    'assignees' => $c['idMembers'] ?? [],
+                    'coverImage' => $coverImagePath,
+                    'created_at' => $createdDate,
+                    'subscribed' => $c['subscribed'] ?? false
                 ];
 
                 if ($isArchived) {
@@ -250,7 +290,8 @@ if (isset($_GET['action'])) {
                 $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
                 $meta['activity'] = array_reverse($meta['activity']);
                 $meta['comments'] = array_reverse($meta['comments']);
-                $meta['assigned_to'] = $c['idMembers'] ?? []; 
+                $meta['assigned_to'] = $c['idMembers'] ?? [];
+                $meta['created_at'] = $createdDate;
                 
                 file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
             }
@@ -309,10 +350,17 @@ if (isset($_GET['action'])) {
             if (!$ext) $ext = pathinfo(parse_url($remoteUrl, PHP_URL_PATH), PATHINFO_EXTENSION);
             
             $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME));
-            $filename = strtolower($cleanName . '.' . $ext);
-            $counter = 1;
-            while(file_exists("$uploadDir/$filename")) {
-                $filename = strtolower($cleanName . '-' . $counter++ . '.' . $ext);
+
+            // DETERMINISTIC NAMING: Prefer ID if provided to match import_trello prediction
+            if (!empty($input['attachmentId'])) {
+                $filename = strtolower($cleanName . '-' . $input['attachmentId'] . '.' . $ext);
+            } else {
+                // Fallback for manual uploads or legacy logic
+                $filename = strtolower($cleanName . '.' . $ext);
+                $counter = 1;
+                while(file_exists("$uploadDir/$filename")) {
+                    $filename = strtolower($cleanName . '-' . $counter++ . '.' . $ext);
+                }
             }
 
             $ch = curl_init($remoteUrl);
@@ -562,6 +610,30 @@ if (isset($_GET['action'])) {
             file_put_contents($metaFile, json_encode($meta, JSON_PRETTY_PRINT));
 
             echo json_encode(['status' => 'moved']);
+            exit;
+        }
+
+        if ($action === 'list_uploads') {
+            $uploadsDir = "$boardDir/uploads";
+            if (!is_dir($uploadsDir)) {
+                echo json_encode(['files' => []]);
+                exit;
+            }
+            
+            // Gather images
+            $files = glob("$uploadsDir/*.{jpg,jpeg,png,gif,webp,JPG,JPEG,PNG,GIF,WEBP}", GLOB_BRACE);
+            
+            // Sort by modification time (newest first)
+            usort($files, function($a, $b) {
+                return filemtime($b) - filemtime($a);
+            });
+
+            // Map to public URLs
+            $urls = array_map(function($f) use ($boardId) {
+                return "boards/$boardId/uploads/" . basename($f);
+            }, $files);
+
+            echo json_encode(['files' => $urls]);
             exit;
         }
 
@@ -891,13 +963,17 @@ if (isset($_GET['action'])) {
                                 @dragover.stop.prevent="onCardDragOver($event, listIndex, cardIndex)"
                                 @click="openCardModal(listIndex, cardIndex)"
                                 class="bg-white dark:bg-slate-700 p-3 rounded shadow-sm border border-slate-200 dark:border-slate-600 hover:shadow-md cursor-pointer transition group relative hover:border-blue-400 mb-2">
-                                
+
                                 <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap">
                                     <span v-for="l in card.labels" :key="l.name || l" 
                                           :class="`bg-${(l.color || l)}-500`" 
                                           class="h-2 w-8 rounded-full block" 
                                           :title="l.name || l">
                                     </span>
+                                </div>
+
+                                <div v-if="card.coverImage" class="mb-2 -mx-3 -mt-3 rounded-t overflow-hidden h-32 relative group/cover">
+                                    <img :src="card.coverImage" class="w-full h-full object-cover">
                                 </div>
                                 
                                 <div class="text-sm text-slate-800 dark:text-slate-100 mb-2">{{ card.title }}</div>
@@ -943,6 +1019,7 @@ if (isset($_GET['action'])) {
 
         <div v-if="isModalOpen" class="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4 backdrop-blur-sm" @click.self="closeModal">
             <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden animate-fade-in-up">
+                
                 <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-start shrink-0 transition-colors">
                     <div class="flex-1 mr-8">
                         <input v-model="activeCard.data.title" @blur="persistLayout" class="w-full text-2xl font-bold bg-transparent border-none focus:ring-0 text-slate-800 dark:text-slate-100 placeholder-slate-400 px-0" placeholder="Card Title">
@@ -972,6 +1049,7 @@ if (isset($_GET['action'])) {
                 </div>
 
                 <div class="flex-1 flex overflow-hidden">
+                    
                     <div class="flex-1 flex flex-col min-w-0 overflow-hidden" :class="{'border-r border-slate-200 dark:border-slate-700': isSidebarOpen}">
                         
                         <div v-show="!isActivityMaximized" class="flex-1 flex min-h-0 relative" ref="splitPaneContainer">
@@ -1015,7 +1093,6 @@ if (isset($_GET['action'])) {
                                 </div>
                                 <div class="flex-1 p-4 overflow-y-auto markdown-body bg-slate-50 dark:bg-slate-900 transition-colors w-full" v-html="compiledMarkdown" @click="handlePreviewClick"></div>
                             </div>
-
                         </div>
 
                         <div class="border-t border-slate-200 dark:border-slate-700 flex flex-col bg-white dark:bg-slate-800 transition-all duration-300 ease-in-out"
@@ -1056,6 +1133,7 @@ if (isset($_GET['action'])) {
                             </div>
 
                             <div v-show="isActivityOpen" class="flex-1 overflow-y-auto p-4 space-y-4">
+                                
                                 <div v-if="activityTab==='comments'" class="flex flex-col h-full">
                                     <div class="flex-1 space-y-4 overflow-y-auto mb-4">
                                         <div v-if="!activeCardMeta.comments.length" class="text-center text-slate-400 text-sm mt-4">No comments.</div>
@@ -1104,6 +1182,7 @@ if (isset($_GET['action'])) {
                                         <button @click="addComment" class="bg-blue-600 text-white px-4 py-2 rounded text-sm font-bold hover:bg-blue-700">Send</button>
                                     </div>
                                 </div>
+
                                 <div v-if="activityTab==='history'" class="space-y-2">
                                     <div v-if="!activeCardMeta.activity.length" class="text-center text-slate-400 text-sm mt-4">No activity.</div>
                                     <div v-for="log in activeCardMeta.activity" :key="log.date" class="text-xs text-slate-600 dark:text-slate-400 flex gap-3 border-b border-slate-50 dark:border-slate-700 pb-1">
@@ -1111,6 +1190,7 @@ if (isset($_GET['action'])) {
                                         <span>{{ log.text }}</span>
                                     </div>
                                 </div>
+
                                 <div v-if="activityTab==='revisions'" class="flex flex-col h-full">
                                     <div v-if="!activeCardMeta.revisions?.length" class="text-center text-slate-400 text-sm mt-4">
                                         No revision history yet.
@@ -1157,6 +1237,72 @@ if (isset($_GET['action'])) {
                                         </div>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="isSidebarOpen" class="w-72 bg-slate-50 dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 flex flex-col overflow-y-auto shrink-0 transition-all duration-300">
+                        <div class="p-4 space-y-6">
+                            
+                            <div class="text-xs text-slate-400 font-mono">
+                                <div>Created {{ formatTime(activeCard.data.created_at) }}</div>
+                                <div class="mt-1">in list <span class="font-bold text-slate-600 dark:text-slate-300">{{ boardData.lists[activeCard.listIndex]?.title }}</span></div>
+                            </div>
+
+                            <div>
+                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-2">Assignees</h3>
+                                <div class="flex flex-wrap gap-2 mb-2">
+                                    <div v-for="uid in activeCard.data.assignees" :key="uid" 
+                                         class="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-full pl-1 pr-3 py-1">
+                                        <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold overflow-hidden">
+                                            <img v-if="getUserAvatar(uid)" :src="getUserAvatar(uid)" class="w-full h-full object-cover">
+                                            <span v-else>{{ getUserInitials(uid) }}</span>
+                                        </div>
+                                        <span class="text-xs font-bold">{{ getUserName(uid) }}</span>
+                                        <button @click="activeCard.data.assignees = activeCard.data.assignees.filter(id => id !== uid); persistLayout()" class="text-slate-400 hover:text-red-500">×</button>
+                                    </div>
+                                    <button @click="!activeCard.data.assignees.includes(currentUser.id) && (activeCard.data.assignees.push(currentUser.id), persistLayout())" 
+                                            v-if="!activeCard.data.assignees?.includes(currentUser.id)"
+                                            class="text-xs bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 px-3 py-1.5 rounded-full transition font-bold text-slate-600 dark:text-slate-300">
+                                        Join
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-2">Labels</h3>
+                                <div class="flex flex-wrap gap-2">
+                                    <button v-for="color in labelColors" :key="color" 
+                                            @click="toggleLabel(color)"
+                                            class="w-8 h-6 rounded hover:opacity-80 transition relative"
+                                            :class="[`bg-${color}-500`, activeCard.data.labels?.find(l=>(l.color||l)===color) ? 'ring-2 ring-offset-1 ring-slate-400' : '']">
+                                        <span v-if="activeCard.data.labels?.find(l=>(l.color||l)===color)" class="absolute inset-0 flex items-center justify-center text-white font-bold text-xs">✓</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-2">Due Date</h3>
+                                <input type="date" v-model="activeCard.data.dueDate" @change="handleDueDateChange" 
+                                       class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            </div>
+
+                            <div class="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-2">
+                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-2">Actions</h3>
+                                
+                                <select @change="moveCardToBoard" class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-700 dark:text-slate-200 mb-2 outline-none">
+                                    <option value="" disabled selected>Move to board...</option>
+                                    <option v-for="b in availableBoards.filter(b => b.id !== currentBoardId)" :key="b.id" :value="b.id">{{ b.name }}</option>
+                                </select>
+
+                                <button @click="archiveActiveCard" class="w-full text-left px-3 py-2 text-sm bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded transition text-slate-700 dark:text-slate-200 font-medium flex items-center gap-2">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                    Archive Card
+                                </button>
+                                <button @click="deleteActiveCard" class="w-full text-left px-3 py-2 text-sm bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 rounded transition text-red-600 dark:text-red-400 font-medium flex items-center gap-2">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                    Delete Card
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -1278,6 +1424,19 @@ if (isset($_GET['action'])) {
                 Edit Card
             </button>
 
+            <button @click="openCoverModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
+                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
+                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                Change Cover
+            </button>
+
+            <button v-if="hasCover(contextMenu.lIdx, contextMenu.cIdx)" 
+                    @click="removeCover(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
+                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
+                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                Remove Cover
+            </button>
+
             <button @click="cloneCard(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
                 <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
@@ -1297,6 +1456,30 @@ if (isset($_GET['action'])) {
                 <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                 Delete
             </button>
+        </div>
+
+        <div v-if="showCoverModalState" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[110] p-4 backdrop-blur-sm" @click.self="showCoverModalState = false">
+            <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-2xl h-[70vh] flex flex-col overflow-hidden animate-fade-in-up border border-slate-200 dark:border-slate-700">
+                <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
+                    <h3 class="font-bold text-slate-700 dark:text-slate-200">Select Cover Image</h3>
+                    <button @click="showCoverModalState = false" class="text-slate-400 hover:text-red-500">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4 bg-slate-100 dark:bg-slate-900/50">
+                    <div v-if="availableCovers.length === 0" class="text-center text-slate-500 py-10">
+                        No images found in uploads.
+                    </div>
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                        <div v-for="img in availableCovers" :key="img" 
+                             @click="setCover(img)"
+                             class="aspect-square rounded-lg border-2 border-transparent hover:border-blue-500 cursor-pointer overflow-hidden relative group bg-slate-200 dark:bg-slate-700">
+                             <img :src="img" class="w-full h-full object-cover">
+                             <div class="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
         <div v-if="showImportModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
             <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700">
@@ -1418,8 +1601,10 @@ if (isset($_GET['action'])) {
                 const revisionIndex = ref(-1); 
                 const isUsersModalOpen = ref(false);
                 const editingUser = ref(null);
-
                 let debounceTimer = null;
+                const showCoverModalState = ref(false);
+                const availableCovers = ref([]);
+                const activeCoverTarget = ref({ lIdx: null, cIdx: null });
 
                 watch(darkMode, (v) => {
                     document.documentElement.classList.toggle('dark', v);
@@ -1532,7 +1717,8 @@ if (isset($_GET['action'])) {
                                             attachments.push({
                                                 cardId: c.id,
                                                 url: att.url,
-                                                name: att.name
+                                                name: att.name,
+                                                id: att.id
                                             });
                                         }
                                     });
@@ -1578,7 +1764,7 @@ if (isset($_GET['action'])) {
                         const structurePayload = {
                             name: importMeta.value.boardName,
                             lists: importMeta.value.lists,
-                            cards: importMeta.value.cards.map(c => ({ ...c, attachments: [] })), 
+                            cards: importMeta.value.cards,
                             checklists: importMeta.value.checklists,
                             actions: importMeta.value.actions,
                             members: importMeta.value.members || [], // Ensure members are passed
@@ -1601,7 +1787,8 @@ if (isset($_GET['action'])) {
                                 card: att.cardId,
                                 url: att.url,
                                 name: att.name,
-                                cookies: authCookies // Pass the cookies here
+                                attachmentId: att.id,
+                                cookies: authCookies
                             });
 
                             importProgress.value.current++;
@@ -1808,6 +1995,37 @@ if (isset($_GET['action'])) {
                     isModalOpen.value = false;
                     persistLayout(); 
                     persistCardDesc(activeCard.value.data); 
+                };
+                const hasCover = (lIdx, cIdx) => {
+                    if (lIdx === null || cIdx === null) return false;
+                    const card = boardData.value.lists[lIdx].cards[cIdx];
+                    return !!card.coverImage;
+                };
+
+                const openCoverModal = async (lIdx, cIdx) => {
+                    activeCoverTarget.value = { lIdx, cIdx };
+                    // Fetch images from backend
+                    try {
+                        const res = await api('list_uploads');
+                        availableCovers.value = res.files || [];
+                        showCoverModalState.value = true;
+                    } catch (e) {
+                        alert("Could not load images");
+                    }
+                };
+
+                const setCover = (url) => {
+                    const { lIdx, cIdx } = activeCoverTarget.value;
+                    if (lIdx !== null && cIdx !== null) {
+                        boardData.value.lists[lIdx].cards[cIdx].coverImage = url;
+                        persistLayout();
+                    }
+                    showCoverModalState.value = false;
+                };
+
+                const removeCover = (lIdx, cIdx) => {
+                    boardData.value.lists[lIdx].cards[cIdx].coverImage = null;
+                    persistLayout();
                 };
                 const showContextMenu = (e, lIdx, cIdx) => {
                     // 1. Save target coordinates and indices
@@ -2216,6 +2434,7 @@ if (isset($_GET['action'])) {
                     labelColors, toggleLabel, handleDueDateChange,
                     originalDescription, revisionIndex, restoreRevision,
                     archiveCardContext, archiveActiveCard, restoreArchivedCard,
+                    showCoverModalState, availableCovers, hasCover, openCoverModal, setCover, removeCover,
 
                     // --- Context Menu ---
                     contextMenu, showContextMenu, closeContextMenu, 
