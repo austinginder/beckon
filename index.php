@@ -34,7 +34,6 @@ if (isset($_GET['action'])) {
             $slug = preg_replace('/[^a-z0-9-]/i', '', strtolower($json['name'] ?? 'Imported'));
             $slug = substr($slug ?: 'board', 0, 30) . '-' . date('ymd');
             
-            // Uniqueness check for import
             $baseSlug = $slug;
             $counter = 1;
             while(file_exists(BOARDS_BASE . '/' . $slug)) {
@@ -43,11 +42,10 @@ if (isset($_GET['action'])) {
 
             $targetDir = BOARDS_BASE . '/' . $slug;
             mkdir($targetDir, 0755, true);
-            // Create uploads dir immediately
             mkdir("$targetDir/uploads", 0755, true);
 
             $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
-            $lists = []; $listMap = []; $cardMeta = [];
+            $lists = []; $listMap = []; $cardMeta = []; $archive = [];
             
             // Lists
             foreach ($json['lists'] as $l) {
@@ -66,8 +64,18 @@ if (isset($_GET['action'])) {
                 $cid = $act['data']['card']['id'];
                 if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
 
-                if ($act['type'] === 'commentCard') 
-                    $cardMeta[$cid]['comments'][] = ['id' => $act['id'], 'text' => $act['data']['text'], 'date' => $act['date']];
+                if ($act['type'] === 'commentCard') {
+                     $user = [
+                        'name' => $act['memberCreator']['fullName'] ?? 'Unknown',
+                        'initials' => $act['memberCreator']['initials'] ?? '?'
+                    ];
+                    $cardMeta[$cid]['comments'][] = [
+                        'id' => $act['id'], 
+                        'text' => $act['data']['text'], 
+                        'date' => $act['date'],
+                        'user' => $user
+                    ];
+                }
                 elseif ($act['type'] === 'createCard') 
                     $cardMeta[$cid]['activity'][] = ['text' => 'Created card', 'date' => $act['date']];
                 elseif ($act['type'] === 'updateCard' && isset($act['data']['listAfter'])) 
@@ -77,18 +85,24 @@ if (isset($_GET['action'])) {
             // Cards
             usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
             foreach ($json['cards'] as $c) {
-                if ($c['closed'] || !isset($listMap[$c['idList']])) continue;
+                $isArchived = $c['closed'] || !isset($listMap[$c['idList']]);
                 $md = $c['desc'];
                 foreach ($checklists[$c['id']] ?? [] as $cl) {
                     $md .= "\n\n### {$cl['name']}\n";
                     foreach ($cl['checkItems'] as $item) $md .= "- [" . ($item['state'] === 'complete' ? 'x' : ' ') . "] {$item['name']}\n";
                 }
 
-                $lists[$listMap[$c['idList']]]['cards'][] = [
+                $cardData = [
                     'id' => $c['id'], 'title' => $c['name'],
                     'labels' => array_map(fn($l) => $colorMap[$l['color']] ?? 'slate', $c['labels'] ?? []),
                     'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null
                 ];
+
+                if ($isArchived) {
+                    $archive[] = $cardData;
+                } else {
+                    $lists[$listMap[$c['idList']]]['cards'][] = $cardData;
+                }
                 
                 file_put_contents("$targetDir/{$c['id']}.md", $md);
                 $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
@@ -97,7 +111,7 @@ if (isset($_GET['action'])) {
                 file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
             }
 
-            file_put_contents("$targetDir/layout.json", json_encode(['title' => $json['name'], 'lists' => $lists], JSON_PRETTY_PRINT));
+            file_put_contents("$targetDir/layout.json", json_encode(['title' => $json['name'], 'lists' => $lists, 'archive' => $archive], JSON_PRETTY_PRINT));
             echo json_encode(['status' => 'imported', 'board' => $slug]);
             exit;
         }
@@ -199,15 +213,21 @@ if (isset($_GET['action'])) {
         if ($action === 'load') {
             $data = json_decode(@file_get_contents("$boardDir/layout.json"), true) ?? [];
             if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
+            if (!isset($data['archive'])) $data['archive'] = []; // Ensure archive exists
             if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
 
-            foreach ($data['lists'] as &$list) {
-                foreach ($list['cards'] as &$card) {
+            // Helper to hydrate
+            $hydrate = function(&$cards) use ($boardDir) {
+                foreach ($cards as &$card) {
                     $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
                     $card['labels'] = $card['labels'] ?? [];
                     $card['dueDate'] = $card['dueDate'] ?? null;
                 }
-            }
+            };
+
+            foreach ($data['lists'] as &$list) $hydrate($list['cards']);
+            $hydrate($data['archive']);
+
             echo json_encode($data);
             exit;
         }
@@ -220,6 +240,9 @@ if (isset($_GET['action'])) {
 
         if ($action === 'save_layout') {
             foreach ($input['lists'] as &$list) foreach ($list['cards'] as &$card) unset($card['description']);
+            if (isset($input['archive'])) {
+                foreach ($input['archive'] as &$card) unset($card['description']);
+            }
             file_put_contents("$boardDir/layout.json", json_encode($input, JSON_PRETTY_PRINT));
             echo json_encode(['status' => 'saved']);
             exit;
@@ -463,6 +486,36 @@ if (isset($_GET['action'])) {
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg> Import
                     <input type="file" @change="importTrello" class="hidden" accept=".json">
                 </label>
+                <div class="relative z-40 ml-2">
+                <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                    Archive
+                    <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ boardData.archive.length }}</span>
+                </button>
+
+                <div v-if="isArchiveOpen" class="absolute top-full right-0 mt-2 w-80 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-right flex flex-col max-h-[500px]">
+                    <div class="p-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                        <input 
+                            ref="archiveSearchInput"
+                            v-model="archiveSearch" 
+                            placeholder="Search archived cards..." 
+                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 px-3 py-2 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-700 dark:text-slate-200"
+                        >
+                    </div>
+                    <div class="flex-1 overflow-y-auto">
+                        <div v-if="filteredArchive.length === 0" class="p-4 text-center text-slate-500 text-sm italic">
+                            {{ boardData.archive?.length ? 'No matches found.' : 'Archive is empty.' }}
+                        </div>
+                        <div v-for="(card, index) in filteredArchive" :key="card.id" 
+                             @click="openCardModal('archive', boardData.archive.indexOf(card)); isArchiveOpen = false"
+                             class="p-3 border-b border-slate-50 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer group">
+                            <div class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1 group-hover:text-blue-600">{{ card.title }}</div>
+                            <div class="text-xs text-slate-400 truncate">{{ card.description?.slice(0, 60) }}...</div>
+                        </div>
+                    </div>
+                </div>
+                <div v-if="isArchiveOpen" @click="isArchiveOpen = false" class="fixed inset-0 z-[-1] cursor-default"></div>
+            </div>
                 <button @click="darkMode = !darkMode" class="text-slate-400 hover:text-white transition p-1.5 rounded hover:bg-slate-800">
                     <svg v-if="darkMode" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                     <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
@@ -544,7 +597,14 @@ if (isset($_GET['action'])) {
                 <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-start shrink-0 transition-colors">
                     <div class="flex-1 mr-8">
                         <input v-model="activeCard.data.title" @blur="persistLayout" class="w-full text-2xl font-bold bg-transparent border-none focus:ring-0 text-slate-800 dark:text-slate-100 placeholder-slate-400 px-0" placeholder="Card Title">
-                        <div class="text-xs text-slate-500 mt-1">in list <span class="font-bold underline">{{ boardData.lists[activeCard.listIndex].title }}</span></div>
+                        <div v-if="activeCard.listIndex === 'archive'" class="mt-2 flex items-center gap-3">
+                            <span class="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-1 rounded">ARCHIVED</span>
+                            <button @click="restoreArchivedCard" class="text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold px-3 py-1 rounded border border-amber-200 transition flex items-center gap-1">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+                                Restore to Board
+                            </button>
+                        </div>
+                        <div v-else class="text-xs text-slate-500 mt-1">in list <span class="font-bold underline">{{ boardData.lists[activeCard.listIndex]?.title }}</span></div>
                     </div>
                     <div class="flex items-center gap-2">
                         <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700" title="Toggle View (Split / Editor / Preview)">
@@ -748,7 +808,12 @@ if (isset($_GET['action'])) {
                                 </option>
                             </select>
                         </div>
-                        <div><h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Actions</h3><button @click="deleteActiveCard" class="w-full bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 text-sm py-2 rounded border border-red-200 dark:border-red-900/50 transition text-left px-3">Delete Card</button></div>
+                        <div><h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Actions</h3>
+                        <button v-if="activeCard.listIndex !== 'archive'" @click="archiveActiveCard" class="w-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-sm py-2 rounded border border-slate-200 dark:border-slate-600 transition text-left px-3 mb-2 flex items-center gap-2">
+                            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                            Archive Card
+                        </button>
+                        <button @click="deleteActiveCard" class="w-full bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 text-sm py-2 rounded border border-red-200 dark:border-red-900/50 transition text-left px-3">Delete Card</button></div>
                         <div class="text-[10px] text-slate-400 text-center mt-10">Card ID: {{ activeCard.data.id }}</div>
                     </div>
                 </div>
@@ -875,6 +940,12 @@ if (isset($_GET['action'])) {
                 Duplicate
             </button>
 
+            <button @click="archiveCardContext(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
+                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
+                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                Archive
+            </button>
+
             <div class="border-t border-slate-100 dark:border-slate-700 my-1"></div>
 
             <button @click="deleteCardContext(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
@@ -894,7 +965,7 @@ if (isset($_GET['action'])) {
                 const darkMode = ref(localStorage.getItem('beckon_darkMode') === 'true');
                 const currentBoardId = ref(localStorage.getItem('beckon_last_board') || '');
                 const availableBoards = ref([]);
-                const boardData = ref({ title: 'Loading...', lists: [] });
+                const boardData = ref({ title: 'Loading...', lists: [], archive: [] });
                 const syncState = ref('synced'); 
                 const isModalOpen = ref(false);
                 const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
@@ -919,6 +990,9 @@ if (isset($_GET['action'])) {
                 const showCreateBoardModal = ref(false);
                 const newBoardTitle = ref('');
                 const contextMenu = ref({ show: false, x: 0, y: 0, lIdx: null, cIdx: null });
+                const isArchiveOpen = ref(false);
+                const archiveSearch = ref('');
+                const archiveSearchInput = ref(null);
 
                 // Revisions State
                 const originalDescription = ref('');
@@ -1086,6 +1160,12 @@ if (isset($_GET['action'])) {
                     
                     try {
                         await api('move_card_to_board', { id, target_board: targetBoardId });
+
+                        if (activeCard.value.listIndex === 'archive') {
+                            boardData.value.archive.splice(activeCard.value.cardIndex, 1);
+                        } else {
+                            boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
+                        }
                         
                         // Remove card from local UI immediately
                         boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
@@ -1098,6 +1178,61 @@ if (isset($_GET['action'])) {
                         alert("Failed to move card: " + err.message);
                         e.target.value = ""; // Reset dropdown on failure
                     }
+                };
+
+                const archiveCardContext = (lIdx, cIdx) => {
+                    const card = boardData.value.lists[lIdx].cards[cIdx];
+                    if (!confirm(`Archive "${card.title}"?`)) return;
+
+                    // 1. Move to Archive
+                    boardData.value.archive.unshift(card);
+                    boardData.value.lists[lIdx].cards.splice(cIdx, 1);
+                    
+                    // 2. Save
+                    persistLayout();
+                    
+                    // 3. Log Activity
+                    api('load_card_meta', {id: card.id}).then(m => {
+                        m.activity = m.activity || [];
+                        m.activity.unshift({ text: 'Archived card', date: new Date().toISOString() });
+                        persistMeta(card.id, m);
+                    });
+                };
+
+                const archiveActiveCard = () => {
+                    if (!confirm("Archive this card?")) return;
+                    const { id } = activeCard.value.data;
+                    
+                    // 1. Move
+                    boardData.value.archive.unshift(activeCard.value.data);
+                    boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
+                    
+                    // 2. Save & Close
+                    persistLayout();
+                    
+                    // 3. Log
+                    activeCardMeta.value.activity.unshift({ text: 'Archived card', date: new Date().toISOString() });
+                    persistMeta(id, activeCardMeta.value);
+                    
+                    isModalOpen.value = false;
+                };
+
+                const restoreArchivedCard = () => {
+                    // 1. Restore to first list (Inbox usually)
+                    const card = boardData.value.archive[activeCard.value.cardIndex];
+                    boardData.value.archive.splice(activeCard.value.cardIndex, 1);
+                    boardData.value.lists[0].cards.unshift(card);
+                    
+                    // 2. Update Active View Context so it doesn't crash
+                    activeCard.value.listIndex = 0;
+                    activeCard.value.cardIndex = 0;
+                    
+                    // 3. Save
+                    persistLayout();
+                    
+                    // 4. Log
+                    activeCardMeta.value.activity.unshift({ text: 'Restored card from archive', date: new Date().toISOString() });
+                    persistMeta(card.id, activeCardMeta.value);
                 };
 
                 const addList = () => { boardData.value.lists.push({ id: 'l'+Date.now(), title: 'New List', cards: [] }); persistLayout(); };
@@ -1115,12 +1250,28 @@ if (isset($_GET['action'])) {
                     return availableBoards.value.filter(b => b.name.toLowerCase().includes(q) || b.id.toLowerCase().includes(q));
                 });
 
+                const filteredArchive = computed(() => {
+                    if (!boardData.value.archive) return [];
+                    const q = archiveSearch.value.toLowerCase();
+                    return boardData.value.archive.filter(c => 
+                        c.title.toLowerCase().includes(q) || 
+                        (c.description || '').toLowerCase().includes(q)
+                    );
+                });
+
+                const toggleArchive = () => {
+                    isArchiveOpen.value = !isArchiveOpen.value;
+                    if (isArchiveOpen.value) {
+                        nextTick(() => archiveSearchInput.value?.focus());
+                    }
+                };
+
                 const openCardModal = async (lIdx, cIdx) => {
-                    const card = boardData.value.lists[lIdx].cards[cIdx];
+                    const isArchived = lIdx === 'archive';
+                    const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
                     activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: card };
                     originalDescription.value = card.description || ''; 
                     revisionIndex.value = -1;
-                    
                     isSidebarOpen.value = false; isModalOpen.value = true; 
                     activeCardMeta.value = { comments: [], activity: [], revisions: [] };
                     
@@ -1221,7 +1372,13 @@ if (isset($_GET['action'])) {
                 const deleteActiveCard = () => {
                     if(!confirm("Delete?")) return;
                     const { id } = activeCard.value.data;
-                    boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
+
+                    if (activeCard.value.listIndex === 'archive') {
+                        boardData.value.archive.splice(activeCard.value.cardIndex, 1);
+                    } else {
+                        boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
+                    }
+
                     persistLayout(); api('delete_card', { id }); isModalOpen.value = false;
                 };
 
@@ -1451,6 +1608,7 @@ if (isset($_GET['action'])) {
                     addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard,
                     labelColors, toggleLabel, handleDueDateChange,
                     originalDescription, revisionIndex, restoreRevision,
+                    archiveCardContext, archiveActiveCard, restoreArchivedCard,
 
                     // --- Context Menu ---
                     contextMenu, showContextMenu, closeContextMenu, 
@@ -1461,7 +1619,10 @@ if (isset($_GET['action'])) {
                     editingCommentId, editCommentText, startEditComment, saveEditComment,
 
                     // --- Utilities & Formatters ---
-                    getTaskStats, getDueDateColor, formatTime, formatDateShort
+                    getTaskStats, getDueDateColor, formatTime, formatDateShort,
+
+                    // --- Archive Support (Add these lines) ---
+                    toggleArchive, isArchiveOpen, archiveSearch, archiveSearchInput, filteredArchive
                 };
             }
         }).mount('#app');
