@@ -116,6 +116,82 @@ if (isset($_GET['action'])) {
             exit;
         }
 
+        if ($action === 'import_attachment') {
+            if (!isset($input['board']) || !isset($input['card']) || !isset($input['url'])) {
+                throw new Exception("Missing parameters");
+            }
+            
+            $slug = preg_replace('/[^a-z0-9-]/i', '', $input['board']);
+            $cardId = preg_replace('/[^a-z0-9-]/i', '', $input['card']);
+            $remoteUrl = $input['url'];
+            $rawName = $input['name'] ?? 'file';
+            // Capture cookies passed from frontend
+            $cookieString = $input['cookies'] ?? '';
+
+            $boardPath = BOARDS_BASE . '/' . $slug;
+            $uploadDir = "$boardPath/uploads";
+            
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+            $ext = pathinfo($rawName, PATHINFO_EXTENSION);
+            if (!$ext) $ext = pathinfo(parse_url($remoteUrl, PHP_URL_PATH), PATHINFO_EXTENSION);
+            
+            $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME));
+            $filename = strtolower($cleanName . '.' . $ext);
+
+            $counter = 1;
+            while(file_exists("$uploadDir/$filename")) {
+                $filename = strtolower($cleanName . '-' . $counter++ . '.' . $ext);
+            }
+
+            $ch = curl_init($remoteUrl);
+            $fp = fopen("$uploadDir/$filename", 'wb');
+            
+            curl_setopt($ch, CURLOPT_FILE, $fp);
+            curl_setopt($ch, CURLOPT_HEADER, 0);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Beckon-Importer)'); 
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); 
+            curl_setopt($ch, CURLOPT_FAILONERROR, true);
+            
+            // Apply cookies if provided
+            if ($cookieString) {
+                curl_setopt($ch, CURLOPT_COOKIE, $cookieString);
+            }
+            
+            curl_exec($ch);
+            
+            if (curl_errno($ch)) {
+                $error_msg = curl_error($ch);
+                curl_close($ch);
+                fclose($fp);
+                @unlink("$uploadDir/$filename"); 
+                echo json_encode(['status' => 'error', 'message' => "cURL Error: $error_msg"]);
+                exit;
+            }
+            
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            fclose($fp);
+
+            if ($httpCode >= 400) {
+                @unlink("$uploadDir/$filename");
+                echo json_encode(['status' => 'error', 'message' => "HTTP Error: $httpCode"]);
+                exit;
+            }
+
+            $mdPath = "$boardPath/$cardId.md";
+            if (file_exists($mdPath)) {
+                $isImage = in_array(strtolower($ext), ['jpg', 'jpeg', 'png', 'gif', 'webp']);
+                $prefix = $isImage ? '!' : '';
+                $append = "\n\n$prefix" . "[" . $rawName . "](boards/$slug/uploads/$filename)";
+                file_put_contents($mdPath, $append, FILE_APPEND);
+            }
+            
+            echo json_encode(['status' => 'ok']);
+            exit;
+        }
+
         if ($action === 'list_boards') {
             $boards = [];
             foreach (glob(BOARDS_BASE . '/*', GLOB_ONLYDIR) as $dir) {
@@ -484,7 +560,7 @@ if (isset($_GET['action'])) {
             <div class="flex gap-2 items-center">
                 <label class="cursor-pointer text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2">
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg> Import
-                    <input type="file" @change="importTrello" class="hidden" accept=".json">
+                    <input type="file" @change="handleImportFile" class="hidden" accept=".json">
                 </label>
                 <div class="relative z-40 ml-2">
                 <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
@@ -954,6 +1030,67 @@ if (isset($_GET['action'])) {
                 Delete
             </button>
         </div>
+        <div v-if="showImportModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
+            <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                
+                <div class="p-6">
+                    <h3 class="text-xl font-bold text-slate-800 dark:text-white mb-4">
+                        Importing: {{ importMeta.boardName }}
+                    </h3>
+
+                    <div v-if="importStep === 'preview'" class="space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="bg-slate-100 dark:bg-slate-700 p-4 rounded-lg text-center">
+                                <div class="text-2xl font-bold text-blue-600">{{ importMeta.cardCount }}</div>
+                                <div class="text-xs text-slate-500 uppercase font-bold">Cards</div>
+                            </div>
+                            <div class="bg-slate-100 dark:bg-slate-700 p-4 rounded-lg text-center">
+                                <div class="text-2xl font-bold text-green-600">{{ importMeta.attachments.length }}</div>
+                                <div class="text-xs text-slate-500 uppercase font-bold">Attachments</div>
+                            </div>
+                        </div>
+
+                        <div class="mt-4">
+                            <label class="block text-xs font-bold text-slate-500 uppercase mb-2">
+                                Private Board Access (Optional)
+                            </label>
+                            <textarea 
+                                v-model="curlInput"
+                                class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded p-2 text-[10px] font-mono h-20 focus:ring-2 focus:ring-blue-500 outline-none resize-none placeholder-slate-400"
+                                placeholder="Paste 'Copy as cURL' command here to import private attachments..."
+                            ></textarea>
+                            <div class="text-[10px] text-slate-400 mt-1">
+                                Go to Network Tab > Right click any Trello request > Copy > Copy as cURL
+                            </div>
+                        </div>
+                        
+                        <div class="flex justify-end gap-3 mt-6">
+                            <button @click="showImportModal = false" class="px-4 py-2 text-slate-500 hover:text-slate-700">Cancel</button>
+                            <button @click="runImportProcess" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-2 rounded shadow-lg">
+                                Start Import
+                            </button>
+                        </div>
+                    </div>
+
+                    <div v-if="importStep === 'importing'" class="space-y-4">
+                        <div class="h-4 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                            <div class="h-full bg-blue-500 transition-all duration-300" 
+                                :style="{ width: (importProgress.current / importProgress.total * 100) + '%' }"></div>
+                        </div>
+                        <div class="flex justify-between text-xs font-mono text-slate-500">
+                            <span>{{ importProgress.status }}</span>
+                            <span>{{ Math.round((importProgress.current / importProgress.total * 100)) }}%</span>
+                        </div>
+                    </div>
+
+                    <div v-if="importStep === 'complete'" class="text-center py-8">
+                        <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <div class="text-lg font-bold text-white">Import Complete!</div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
     </div>
     <script>
         const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
@@ -993,6 +1130,19 @@ if (isset($_GET['action'])) {
                 const isArchiveOpen = ref(false);
                 const archiveSearch = ref('');
                 const archiveSearchInput = ref(null);
+                const showImportModal = ref(false);
+                const importStep = ref('preview'); // preview, importing, complete
+                const importMeta = ref({ 
+                    boardName: '', 
+                    cardCount: 0, 
+                    lists: [], 
+                    cards: [], 
+                    attachments: [], // Array of {cardId, url, name}
+                    checklists: [],
+                    actions: []
+                });
+                const importProgress = ref({ current: 0, total: 0, status: '' });
+                const curlInput = ref('');
 
                 // Revisions State
                 const originalDescription = ref('');
@@ -1101,15 +1251,120 @@ if (isset($_GET['action'])) {
                     }
                 };
 
-                const importTrello = async (e) => {
-                    if(!e.target.files[0] || !confirm("Import Trello board?")) return;
-                    const fd = new FormData(); fd.append('file', e.target.files[0]);
-                    syncState.value = 'saving';
+                const handleImportFile = (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        try {
+                            const json = JSON.parse(evt.target.result);
+                            
+                            // Extract Attachments for the Queue
+                            const attachments = [];
+                            
+                            // Trello stores cards in json.cards
+                            json.cards.forEach(c => {
+                                if (c.attachments && c.attachments.length > 0) {
+                                    c.attachments.forEach(att => {
+                                        // Only get downloadable files
+                                        if (att.url) {
+                                            attachments.push({
+                                                cardId: c.id,
+                                                url: att.url,
+                                                name: att.name
+                                            });
+                                        }
+                                    });
+                                }
+                            });
+
+                            // Set Meta for Preview
+                            importMeta.value = {
+                                boardName: json.name || 'Imported Board',
+                                cardCount: json.cards.length,
+                                lists: json.lists,
+                                cards: json.cards, // Raw card data
+                                checklists: json.checklists || [],
+                                actions: json.actions || [],
+                                attachments: attachments
+                            };
+
+                            importStep.value = 'preview';
+                            showImportModal.value = true;
+                            
+                        } catch (err) {
+                            alert("Invalid JSON file");
+                        }
+                        e.target.value = ''; // Reset input
+                    };
+                    reader.readAsText(file);
+                };
+
+                const runImportProcess = async () => {
+                    importStep.value = 'importing';
+                    importProgress.value = { current: 0, total: importMeta.value.attachments.length + 1, status: 'Creating Board Structure...' };
+
+                    let authCookies = '';
+                    if (curlInput.value) {
+                        // Regex looks for -b '...' or --cookie '...'
+                        // It captures everything inside the single quotes
+                        const match = curlInput.value.match(/(?:-b|--cookie)\s+'([^']+)'/);
+                        if (match && match[1]) {
+                            authCookies = match[1];
+                        }
+                    }
+
                     try {
-                        const json = await (await fetch(`?action=import_trello`, { method:'POST', body:fd })).json();
-                        if(json.board) { alert("Import successful!"); await fetchBoards(); currentBoardId.value=json.board; await switchBoard(); }
-                        else alert("Import failed.");
-                    } catch(err) { alert("Error: " + err.message); } finally { syncState.value='synced'; e.target.value=''; }
+                        // ... (Step 1: Board creation remains the same) ...
+                        const structurePayload = {
+                            name: importMeta.value.boardName,
+                            lists: importMeta.value.lists,
+                            cards: importMeta.value.cards.map(c => ({ ...c, attachments: [] })), 
+                            checklists: importMeta.value.checklists,
+                            actions: importMeta.value.actions
+                        };
+
+                        const blob = new Blob([JSON.stringify(structurePayload)], { type: "application/json" });
+                        const fd = new FormData();
+                        fd.append('file', blob, 'import.json');
+
+                        const res = await (await fetch(`?action=import_trello`, { method:'POST', body:fd })).json();
+                        
+                        if (!res.board) throw new Error("Board creation failed");
+                        
+                        const newBoardSlug = res.board;
+                        importProgress.value.current = 1;
+
+                        // Step 2: Process Attachments with Cookies
+                        for (const [index, att] of importMeta.value.attachments.entries()) {
+                            importProgress.value.status = `Downloading attachment ${index + 1} of ${importMeta.value.attachments.length}...`;
+                            
+                            await api('import_attachment', {
+                                board: newBoardSlug,
+                                card: att.cardId,
+                                url: att.url,
+                                name: att.name,
+                                cookies: authCookies // Pass the cookies here
+                            });
+
+                            importProgress.value.current++;
+                        }
+
+                        // ... (Completion logic remains the same) ...
+                        importStep.value = 'complete';
+                        importProgress.value.status = 'Done!';
+                        
+                        await fetchBoards();
+                        currentBoardId.value = newBoardSlug;
+                        await switchBoard();
+
+                        setTimeout(() => { showImportModal.value = false; curlInput.value = ''; }, 1500);
+
+                    } catch (err) {
+                        alert("Import Error: " + err.message);
+                        showImportModal.value = false;
+                    }
                 };
 
                 const createBoard = async () => {
@@ -1589,10 +1844,13 @@ if (isset($_GET['action'])) {
                     syncMessage: computed(() => syncState.value.toUpperCase()),
 
                     // --- Board Navigation & CRUD ---
-                    boardData, currentBoardId, availableBoards, selectBoard, switchBoard, importTrello,
+                    boardData, currentBoardId, availableBoards, selectBoard, switchBoard, handleImportFile,
                     showBoardSelector, boardSearch, boardSearchInput, filteredBoards, isBoardSwitcherOpen, toggleBoardSwitcher,
                     showCreateBoardModal, newBoardTitle, createBoard,
                     showRenameModal, tempBoardTitle, openRenameModal, saveBoardTitle, deleteBoard,
+
+                    // --- Trello Import State ---
+                    showImportModal, importMeta, importStep, importProgress, runImportProcess, curlInput,
 
                     // --- Lists & Drag-and-Drop ---
                     addList, deleteList, persistLayout,
@@ -1621,7 +1879,7 @@ if (isset($_GET['action'])) {
                     // --- Utilities & Formatters ---
                     getTaskStats, getDueDateColor, formatTime, formatDateShort,
 
-                    // --- Archive Support (Add these lines) ---
+                    // --- Archive Support ---
                     toggleArchive, isArchiveOpen, archiveSearch, archiveSearchInput, filteredArchive
                 };
             }
