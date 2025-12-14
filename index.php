@@ -1135,17 +1135,39 @@ if (isset($_GET['action'])) {
                 };
 
                 const closeModal = () => { 
-                    // Revision check
+                    // Check if description changed (or if we restored an old version)
                     if (activeCard.value.data.description !== originalDescription.value) {
-                        api('save_revision', {
-                            id: activeCard.value.data.id,
-                            text: originalDescription.value,
+                        
+                        // 1. Create the new revision object locally
+                        const newRev = {
+                            id: Date.now().toString(),
+                            date: new Date().toISOString(),
+                            text: originalDescription.value, // Save the state we are leaving behind
                             user: currentUser.value.name
+                        };
+
+                        // 2. Add to local state (Top of list)
+                        activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
+                        activeCardMeta.value.revisions.unshift(newRev);
+                        
+                        // 3. Limit to 50 revisions
+                        if (activeCardMeta.value.revisions.length > 50) {
+                            activeCardMeta.value.revisions = activeCardMeta.value.revisions.slice(0, 50);
+                        }
+
+                        // 4. Add Activity Log
+                        activeCardMeta.value.activity.unshift({ 
+                            text: 'Modified description (Revision saved)', 
+                            date: new Date().toISOString() 
                         });
-                        activeCardMeta.value.activity.unshift({ text: 'Modified description (Revision saved)', date: new Date().toISOString() });
+
+                        // 5. Save everything in ONE request to prevent data loss
                         persistMeta(activeCard.value.data.id, activeCardMeta.value);
                     }
-                    isModalOpen.value = false; persistLayout(); persistCardDesc(activeCard.value.data); 
+                    
+                    isModalOpen.value = false;
+                    persistLayout(); 
+                    persistCardDesc(activeCard.value.data); 
                 };
                 const showContextMenu = (e, lIdx, cIdx) => {
                     // 1. Save target coordinates and indices
@@ -1296,8 +1318,7 @@ if (isset($_GET['action'])) {
 
                 const restoreRevision = () => {
                     if (revisionIndex.value > -1 && confirm("Restore this version?")) {
-                        activeCard.value.data.description = activeCardMeta.value.revisions[revisionIndex.value].text;
-                        originalDescription.value = activeCard.value.data.description;
+                        activeCard.value.data.description = activeCardMeta.value.revisions[revisionIndex.value].text;                        
                         revisionIndex.value = -1;
                         debouncedSaveCard();
                     }
