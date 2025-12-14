@@ -648,6 +648,9 @@ if (isset($_GET['action'])) {
                                 <div class="text-sm text-slate-800 dark:text-slate-100 mb-2">{{ card.title }}</div>
                                 <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
                                     <span v-if="card.description"><svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg></span>
+                                    <span v-if="hasAttachment(card.description)" title="Has Attachments">
+                                        <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                                    </span>
                                     <span v-if="getTaskStats(card.description).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card.description).done === getTaskStats(card.description).total}">
                                         <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card.description).done }}/{{ getTaskStats(card.description).total }}
                                     </span>
@@ -1143,6 +1146,7 @@ if (isset($_GET['action'])) {
                 });
                 const importProgress = ref({ current: 0, total: 0, status: '' });
                 const curlInput = ref('');
+                const hasAttachment = (text) => text && text.indexOf('/uploads/') !== -1;
 
                 // Revisions State
                 const originalDescription = ref('');
@@ -1877,7 +1881,7 @@ if (isset($_GET['action'])) {
                     editingCommentId, editCommentText, startEditComment, saveEditComment,
 
                     // --- Utilities & Formatters ---
-                    getTaskStats, getDueDateColor, formatTime, formatDateShort,
+                    getTaskStats, getDueDateColor, formatTime, formatDateShort, hasAttachment,
 
                     // --- Archive Support ---
                     toggleArchive, isArchiveOpen, archiveSearch, archiveSearchInput, filteredArchive
