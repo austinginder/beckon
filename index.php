@@ -862,6 +862,7 @@ class App {
         .dark .markdown-body a { color: #60a5fa; }
         .dark .markdown-body pre, .dark .markdown-body code { background: #1e293b; color: #f472b6; }
         .dark .markdown-body blockquote { border-left-color: #334155; color: #94a3b8; }
+        .dark input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
         .markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body blockquote, .markdown-body pre { margin-bottom: 1em; }
         .markdown-body h1 { font-size: 2em; font-weight: 800; margin: 1.5em 0 0.5em; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3em; }
         .markdown-body h2 { font-size: 1.5em; font-weight: 700; margin: 1.5em 0 0.5em; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3em; }
@@ -1433,7 +1434,7 @@ class App {
                                         <button @click="activeCard.data.assignees = activeCard.data.assignees.filter(id => id !== uid); persistLayout()" class="text-slate-400 hover:text-red-500">×</button>
                                     </div>
                                     <button @click="!activeCard.data.assignees.includes(currentUser.id) && (activeCard.data.assignees.push(currentUser.id), persistLayout())" 
-                                            v-if="!activeCard.data.assignees?.includes(currentUser.id)"
+                                            v-if="currentUser.id && !activeCard.data.assignees?.includes(currentUser.id)"
                                             class="text-xs bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 px-3 py-1.5 rounded-full transition font-bold text-slate-600 dark:text-slate-300">
                                         Join
                                     </button>
@@ -1460,7 +1461,7 @@ class App {
                                             {{ Math.round((activeCard.data.checklistStats?.done || 0) / (activeCard.data.checklistStats?.total || 1) * 100) }}%
                                         </span>
                                     </h3>
-                                    <button @click="createChecklist" class="text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 hover:text-blue-600 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 px-2 py-0.5 rounded transition font-bold">
+                                    <button @click="createChecklist" class="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-blue-100 hover:text-blue-600 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 px-2 py-0.5 rounded transition font-bold">
                                         + New
                                     </button>
                                 </div>
@@ -2365,8 +2366,8 @@ class App {
                 if (!u) return null;
                 return u.avatarFile || (u.avatarHash ? `https://trello-members.s3.amazonaws.com/${u.id}/${u.avatarHash}/170.png` : null);
             };
-            const getUserInitials = (id) => getUser(id)?.initials || null;
-            const getUserName = (id) => getUser(id)?.fullName || null;
+            const getUserInitials = (id) => getUser(id)?.initials || '?';
+            const getUserName = (id) => getUser(id)?.fullName || 'Unknown User';
 
             const saveUser = () => {
                 const parts = currentUser.value.name.trim().split(' ');
@@ -2376,7 +2377,9 @@ class App {
 
             const saveUserEntry = async () => {
                 if (!editingUser.value.fullName) return alert("Name required");
-                if (!boardData.value.users) boardData.value.users = {};
+                if (!boardData.value.users || Array.isArray(boardData.value.users)) {
+                    boardData.value.users = {};
+                }
                 boardData.value.users[editingUser.value.id] = editingUser.value;
                 await api('save_users', { users: boardData.value.users });
                 editingUser.value = null;
