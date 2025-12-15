@@ -2,697 +2,601 @@
 /**
  * Beckon - Where Markdown charts the course
  */
+namespace Beckon;
+
+use Exception;
+use RecursiveIteratorIterator;
+use RecursiveDirectoryIterator;
+
+// Configuration
 define('BECKON_VERSION', '1.0.0');
-define('BASE_DIR', __DIR__);
-define('BOARDS_BASE', BASE_DIR . '/boards');
 
-// Ensure directories exist
-if (!file_exists(BOARDS_BASE)) mkdir(BOARDS_BASE, 0755, true);
+class App {
+    private $baseDir;
+    private $boardsDir;
 
-function getBoardPath($id) {
-    $clean = preg_replace('/[^a-z0-9-]/i', '', $id);
-    if (!$clean || $clean === '.' || $clean === '..') throw new Exception("Invalid ID");
-    return BOARDS_BASE . '/' . $clean;
-}
-
-// --- API HANDLER ---
-if (isset($_GET['action'])) {
-    header('Content-Type: application/json');
-    $action = $_GET['action'];
-    $input = json_decode(file_get_contents('php://input'), true) ?? [];
-    $boardId = $_GET['board'] ?? 'main';
-    // Validate boardId for basic safety
-    $boardId = preg_replace('/[^a-z0-9-]/i', '', $boardId);
-    $boardDir = $boardId ? BOARDS_BASE . '/' . $boardId : null;
-
-    try {
-        if ($action === 'import_trello') {
-            if (!isset($_FILES['file'])) throw new Exception("No file");
-            $json = json_decode(file_get_contents($_FILES['file']['tmp_name']), true);
-            if (!$json) throw new Exception("Invalid JSON");
-
-            // 1. Create Board Directory
-            $slug = preg_replace('/[^a-z0-9-]/i', '', strtolower($json['name'] ?? 'Imported'));
-            $slug = substr($slug ?: 'board', 0, 30) . '-' . date('ymd');
-            $baseSlug = $slug;
-            $counter = 1;
-            while(file_exists(BOARDS_BASE . '/' . $slug)) {
-                $slug = $baseSlug . '-' . $counter++;
-            }
-            $targetDir = BOARDS_BASE . '/' . $slug;
-            mkdir($targetDir, 0755, true);
-            mkdir("$targetDir/uploads", 0755, true);
-            
-            // Avatar Directory
-            $avatarDir = "$targetDir/uploads/avatars";
-            mkdir($avatarDir, 0755, true);
-
-            // 2. Build Users Registry & Global Label Context
-            $usersMap = [];
-            $globalLabelNames = $json['labelNames'] ?? []; 
-            
-            // Helper to download avatar
-            $downloadAvatar = function($id, $hash) use ($avatarDir, $slug) {
-                if (!$hash) return null;
-                $url = "https://trello-members.s3.amazonaws.com/{$id}/{$hash}/170.png";
-                $filename = "{$id}.png";
-                $content = @file_get_contents($url);
-                if ($content) {
-                    file_put_contents("$avatarDir/$filename", $content);
-                    return "boards/$slug/uploads/avatars/$filename";
-                }
-                return null;
-            };
-
-            // Priority 1: Global Members List
-            if (isset($json['members']) && is_array($json['members'])) {
-                foreach ($json['members'] as $m) {
-                    $localAvatar = $downloadAvatar($m['id'], $m['avatarHash'] ?? null);
-                    $usersMap[$m['id']] = [
-                        'id' => $m['id'],
-                        'username' => $m['username'] ?? '',
-                        'fullName' => $m['fullName'] ?? 'Unknown',
-                        'initials' => $m['initials'] ?? '?',
-                        'avatarHash' => $m['avatarHash'] ?? null,
-                        'avatarFile' => $localAvatar
-                    ];
-                }
-            }
-            
-            // 3. Process Lists (and track closed ones)
-            $lists = []; 
-            $listMap = []; 
-            $cardMeta = []; 
-            $archive = [];
-            $closedListIds = []; 
-
-            foreach ($json['lists'] as $l) {
-                if ($l['closed']) {
-                    $closedListIds[$l['id']] = true;
-                    continue;
-                }
-                $lists[] = ['id' => $l['id'], 'title' => $l['name'], 'cards' => []];
-                $listMap[$l['id']] = count($lists) - 1;
-            }
-
-            // 4. Process Checklists (Group by Card ID)
-            $checklists = [];
-            foreach ($json['checklists'] ?? [] as $cl) $checklists[$cl['idCard']][] = $cl;
-
-            // 5. Process Actions (Comments, History, Revisions, Members, Dates)
-            foreach (array_reverse($json['actions'] ?? []) as $act) {
-                if (!isset($act['data']['card']['id'])) continue;
-                $cid = $act['data']['card']['id'];
-                
-                // Capture users from comments not in global list
-                if (isset($act['memberCreator']['id']) && !isset($usersMap[$act['memberCreator']['id']])) {
-                    $m = $act['memberCreator'];
-                    $localAvatar = $downloadAvatar($m['id'], $m['avatarHash'] ?? null);
-                    $usersMap[$m['id']] = [
-                        'id' => $m['id'],
-                        'username' => $m['username'] ?? '',
-                        'fullName' => $m['fullName'] ?? 'Unknown',
-                        'initials' => $m['initials'] ?? '?',
-                        'avatarHash' => $m['avatarHash'] ?? null,
-                        'avatarFile' => $localAvatar
-                    ];
-                }
-
-                if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
-                
-                if ($act['type'] === 'commentCard') {
-                    $userId = $act['memberCreator']['id'] ?? null;
-                    $userFallback = [
-                        'name' => $act['memberCreator']['fullName'] ?? 'Unknown',
-                        'initials' => $act['memberCreator']['initials'] ?? '?'
-                    ];
-                    $cardMeta[$cid]['comments'][] = [
-                        'id' => $act['id'], 
-                        'text' => $act['data']['text'], 
-                        'date' => $act['date'],
-                        'user_id' => $userId, 
-                        'user' => $userFallback 
-                    ];
-                }
-                elseif ($act['type'] === 'createCard') {
-                    $creator = $act['memberCreator']['fullName'] ?? 'Someone';
-                    $cardMeta[$cid]['activity'][] = ['text' => "Created by $creator", 'date' => $act['date']];
-                }
-                elseif ($act['type'] === 'updateCard') {
-                    $actor = $act['memberCreator']['fullName'] ?? 'Someone';
-                    if (isset($act['data']['listAfter'])) {
-                        $cardMeta[$cid]['activity'][] = [
-                            'text' => "Moved to {$act['data']['listAfter']['name']} by $actor", 
-                            'date' => $act['date']
-                        ];
-                    }
-                    if (isset($act['data']['old']['desc'])) {
-                        array_unshift($cardMeta[$cid]['revisions'], [
-                            'id' => $act['id'],
-                            'date' => $act['date'],
-                            'text' => $act['data']['old']['desc'],
-                            'user' => $actor
-                        ]);
-                        $cardMeta[$cid]['activity'][] = ['text' => "Updated description by $actor", 'date' => $act['date']];
-                    }
-                    if (isset($act['data']['card']['closed'])) {
-                        $action = $act['data']['card']['closed'] ? 'Archived card' : 'Restored card to board';
-                        $cardMeta[$cid]['activity'][] = ['text' => "$action by $actor", 'date' => $act['date']];
-                    }
-                    if (array_key_exists('due', $act['data']['old'])) {
-                        $newDue = $act['data']['card']['due'];
-                        $text = $newDue ? "Changed due date to " . substr($newDue, 0, 10) : "Removed due date";
-                        $cardMeta[$cid]['activity'][] = ['text' => "$text by $actor", 'date' => $act['date']];
-                    }
-                }
-                elseif ($act['type'] === 'addMemberToCard') {
-                    $member = $act['member']['fullName'] ?? 'Unknown';
-                    $actor = $act['memberCreator']['fullName'] ?? 'Someone';
-                    $text = ($member === $actor) ? "Joined card" : "Added $member to card";
-                    $cardMeta[$cid]['activity'][] = ['text' => $text, 'date' => $act['date']];
-                }
-                elseif ($act['type'] === 'removeMemberFromCard') {
-                    $member = $act['member']['fullName'] ?? 'Unknown';
-                    $actor = $act['memberCreator']['fullName'] ?? 'Someone';
-                    $text = ($member === $actor) ? "Left card" : "Removed $member from card";
-                    $cardMeta[$cid]['activity'][] = ['text' => $text, 'date' => $act['date']];
-                }
-            }
-
-            // Build Attachment Map
-            $attachmentMap = [];
-            foreach ($json['cards'] as $cTemp) {
-                if (isset($cTemp['attachments'])) {
-                    foreach ($cTemp['attachments'] as $att) {
-                        $ext = pathinfo($att['name'], PATHINFO_EXTENSION);
-                        if (!$ext) $ext = pathinfo(parse_url($att['url'], PHP_URL_PATH), PATHINFO_EXTENSION);
-                        $attachmentMap[$att['id']] = [
-                            'url' => $att['url'],
-                            'name' => $att['name'],
-                            'ext' => $ext,
-                            'id' => $att['id']
-                        ];
-                    }
-                }
-            }
-
-            // 6. Process Cards
-            usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
-            $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
-
-            foreach ($json['cards'] as $c) {
-                // Check if card is closed OR belongs to a closed list OR is unmapped
-                $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
-                $createdTimestamp = hexdec(substr($c['id'], 0, 8));
-                $createdDate = date('c', $createdTimestamp);
-
-                $coverImagePath = null;
-                if (!empty($c['idAttachmentCover']) && isset($attachmentMap[$c['idAttachmentCover']])) {
-                    $att = $attachmentMap[$c['idAttachmentCover']];
-                    $rawName = pathinfo($att['name'], PATHINFO_FILENAME);
-                    $cleanName = preg_replace('/[^a-z0-9-]/i', '-', $rawName);
-                    $filename = strtolower($cleanName . '-' . $att['id'] . '.' . $att['ext']);
-                    $coverImagePath = "boards/$slug/uploads/$filename";
-                }
-
-                // --- Process Checklists into Meta, NOT Markdown ---
-                $cardChecklists = [];
-                $checklistStats = ['total' => 0, 'done' => 0];
-                
-                if (isset($checklists[$c['id']])) {
-                    foreach ($checklists[$c['id']] as $cl) {
-                        // Sort items by position
-                        usort($cl['checkItems'], fn($a, $b) => $a['pos'] <=> $b['pos']);
-                        
-                        $items = [];
-                        foreach ($cl['checkItems'] as $item) {
-                            $items[] = [
-                                'id' => $item['id'],
-                                'name' => $item['name'],
-                                'state' => $item['state']
-                            ];
-                            $checklistStats['total']++;
-                            if ($item['state'] === 'complete') $checklistStats['done']++;
-                        }
-
-                        $cardChecklists[] = [
-                            'id' => $cl['id'],
-                            'name' => $cl['name'],
-                            'items' => $items
-                        ];
-                    }
-                }
-
-                // Use Trello description directly without appending checklists
-                $md = $c['desc'];
-
-                // Process Labels
-                $mappedLabels = [];
-                foreach ($c['labels'] ?? [] as $l) {
-                    $colorKey = $l['color'] ?? 'black';
-                    $finalName = $l['name'];
-                    if (empty($finalName) && !empty($globalLabelNames[$colorKey])) {
-                        $finalName = $globalLabelNames[$colorKey];
-                    }
-                    if (empty($finalName)) {
-                        $finalName = ucfirst($colorKey);
-                    }
-                    $mappedLabels[] = [
-                        'color' => $colorMap[$colorKey] ?? 'slate',
-                        'name' => $finalName
-                    ]; 
-                }
-
-                $cardData = [
-                    'id' => $c['id'], 
-                    'title' => $c['name'],
-                    'labels' => $mappedLabels,
-                    'startDate' => (isset($c['start']) && $c['start']) ? substr($c['start'], 0, 10) : null,
-                    'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null,
-                    'assignees' => $c['idMembers'] ?? [],
-                    'coverImage' => $coverImagePath,
-                    'created_at' => $createdDate,
-                    'subscribed' => $c['subscribed'] ?? false,
-                    'checklistStats' => $checklistStats['total'] > 0 ? $checklistStats : null
-                ];
-
-                if ($isArchived) {
-                    $archive[] = $cardData;
-                } else {
-                    $lists[$listMap[$c['idList']]]['cards'][] = $cardData;
-                }
-                
-                file_put_contents("$targetDir/{$c['id']}.md", $md);
-                
-                $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
-                $meta['activity'] = array_reverse($meta['activity']);
-                $meta['comments'] = array_reverse($meta['comments']);
-                $meta['assigned_to'] = $c['idMembers'] ?? [];
-                $meta['created_at'] = $createdDate;
-                
-                // Save structured checklists to the card's meta JSON
-                $meta['checklists'] = $cardChecklists;
-                
-                file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
-            }
-
-            file_put_contents("$targetDir/layout.json", json_encode([
-                'title' => $json['name'], 
-                'lists' => $lists, 
-                'archive' => $archive,
-                'trello_id' => $json['id']
-            ], JSON_PRETTY_PRINT));
-
-            file_put_contents("$targetDir/users.json", json_encode($usersMap, JSON_PRETTY_PRINT));
-
-            echo json_encode(['status' => 'imported', 'board' => $slug]);
-            exit;
+    public function __construct() {
+        $this->baseDir = __DIR__;
+        $this->boardsDir = $this->baseDir . '/boards';
+        
+        // Ensure directories exist
+        if (!file_exists($this->boardsDir)) {
+            mkdir($this->boardsDir, 0755, true);
         }
+    }
 
-        if ($action === 'save_users') {
-            file_put_contents("$boardDir/users.json", json_encode($input['users'], JSON_PRETTY_PRINT));
-            echo json_encode(['status' => 'saved']);
-            exit;
+    public function run() {
+        // Only intercept if this is an API request
+        if (isset($_GET['action'])) {
+            $this->handleApi($_GET['action']);
         }
+        // Otherwise, let the script continue to render the HTML below
+    }
 
-        if ($action === 'upload_avatar') {
-            if (!isset($_FILES['file'])) throw new Exception('No file');
-            $avatarDir = "$boardDir/uploads/avatars";
-            if (!is_dir($avatarDir)) mkdir($avatarDir, 0755, true);
+    private function handleApi($action) {
+        header('Content-Type: application/json');
 
-            $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
-            $cleanName = uniqid('u_'); 
-            $filename = "$cleanName.$ext";
+        try {
+            // parse JSON input
+            $input = json_decode(file_get_contents('php://input'), true) ?? [];
             
-            move_uploaded_file($_FILES['file']['tmp_name'], "$avatarDir/$filename");
-            echo json_encode(['url' => "boards/$boardId/uploads/avatars/$filename"]);
-            exit;
-        }
+            // Context setup
+            $boardId = $_GET['board'] ?? 'main';
+            $boardId = preg_replace('/[^a-z0-9-]/i', '', $boardId);
+            $boardDir = $boardId ? $this->boardsDir . '/' . $boardId : null;
 
-        if ($action === 'import_attachment') {
-            if (!isset($input['board']) || !isset($input['card']) || !isset($input['url'])) {
-                throw new Exception("Missing parameters");
-            }
-            
-            $slug = preg_replace('/[^a-z0-9-]/i', '', $input['board']);
-            $cardId = preg_replace('/[^a-z0-9-]/i', '', $input['card']);
-            $remoteUrl = $input['url'];
-            $rawName = $input['name'] ?? 'file';
-            // Capture cookies passed from frontend
-            $cookieString = $input['cookies'] ?? '';
+            // Route action to method (e.g., 'list_boards' -> 'actionListBoards')
+            $methodName = 'action' . str_replace(' ', '', ucwords(str_replace('_', ' ', $action)));
 
-            $boardPath = BOARDS_BASE . '/' . $slug;
-            $uploadDir = "$boardPath/uploads";
-            
-            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-
-            $ext = pathinfo($rawName, PATHINFO_EXTENSION);
-            if (!$ext) $ext = pathinfo(parse_url($remoteUrl, PHP_URL_PATH), PATHINFO_EXTENSION);
-            
-            $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME));
-
-            // DETERMINISTIC NAMING: Prefer ID if provided to match import_trello prediction
-            if (!empty($input['attachmentId'])) {
-                $filename = strtolower($cleanName . '-' . $input['attachmentId'] . '.' . $ext);
+            if (method_exists($this, $methodName)) {
+                $response = $this->$methodName($input, $boardId, $boardDir);
+                echo json_encode($response);
             } else {
-                // Fallback for manual uploads or legacy logic
-                $filename = strtolower($cleanName . '.' . $ext);
-                $counter = 1;
-                while(file_exists("$uploadDir/$filename")) {
-                    $filename = strtolower($cleanName . '-' . $counter++ . '.' . $ext);
-                }
+                throw new Exception("Invalid action");
             }
 
-            $ch = curl_init($remoteUrl);
-            $fp = fopen("$uploadDir/$filename", 'wb');
-            curl_setopt($ch, CURLOPT_FILE, $fp);
-            curl_setopt($ch, CURLOPT_HEADER, 0);
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-            curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Beckon-Importer)'); 
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); 
-            curl_setopt($ch, CURLOPT_FAILONERROR, true);
-            // Apply cookies if provided
-            if ($cookieString) {
-                curl_setopt($ch, CURLOPT_COOKIE, $cookieString);
-            }
-            
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['error' => $e->getMessage()]);
+        }
+        exit; // Stop execution so HTML doesn't render
+    }
+
+    // --- API Actions ---
+
+    protected function actionCheckUpdates() {
+        $stateFile = $this->boardsDir . '/update_state.json';
+        $state = file_exists($stateFile) ? json_decode(file_get_contents($stateFile), true) : ['last_check' => 0, 'latest_version' => BECKON_VERSION];
+
+        if (time() - ($state['last_check'] ?? 0) > 86400) {
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => 'https://github.com/austinginder/beckon/releases/latest',
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HEADER => true,
+                CURLOPT_NOBODY => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_USERAGENT => 'Beckon-Updater'
+            ]);
             curl_exec($ch);
-            if (curl_errno($ch)) {
-                $error_msg = curl_error($ch);
-                curl_close($ch);
-                fclose($fp);
-                @unlink("$uploadDir/$filename"); 
-                echo json_encode(['status' => 'error', 'message' => "cURL Error: $error_msg"]);
-                exit;
-            }
-            
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
             curl_close($ch);
-            fclose($fp);
 
-            if ($httpCode >= 400) {
-                @unlink("$uploadDir/$filename");
-                echo json_encode(['status' => 'error', 'message' => "HTTP Error: $httpCode"]);
-                exit;
-            }
-
-            $mdPath = "$boardPath/$cardId.md";
-            if (file_exists($mdPath)) {
-                $isImage = in_array(strtolower($ext), ['jpg', 'jpeg', 'png', 'gif', 'webp']);
-                $prefix = $isImage ? '!' : '';
-                $append = "\n\n$prefix" . "[" . $rawName . "](boards/$slug/uploads/$filename)";
-                file_put_contents($mdPath, $append, FILE_APPEND);
-            }
-            
-            echo json_encode(['status' => 'ok']);
-            exit;
+            $latestVersion = basename($effectiveUrl);
+            $state = ['last_check' => time(), 'latest_version' => $latestVersion];
+            file_put_contents($stateFile, json_encode($state));
         }
 
-        if ($action === 'list_boards') {
-            $boards = [];
-            foreach (glob(BOARDS_BASE . '/*', GLOB_ONLYDIR) as $dir) {
-                $id = basename($dir);
-                $layout = json_decode(@file_get_contents("$dir/layout.json"), true);
-                $boards[] = ['id' => $id, 'name' => $layout['title'] ?? $id];
+        return [
+            'update_available' => version_compare(ltrim($state['latest_version'], 'v'), ltrim(BECKON_VERSION, 'v'), '>'),
+            'latest_version' => $state['latest_version']
+        ];
+    }
+
+    protected function actionPerformUpdate($input) {
+        $targetVersion = $input['version'] ?? null;
+        if (!$targetVersion || !preg_match('/^v?[\d\.]+$/', $targetVersion)) throw new Exception("Invalid version");
+
+        $url = "https://raw.githubusercontent.com/austinginder/beckon/{$targetVersion}/index.php";
+        $newContent = @file_get_contents($url);
+        
+        if (!$newContent || strpos($newContent, '<?php') !== 0) throw new Exception("Download failed or invalid file signature.");
+
+        if (!copy(__FILE__, __FILE__ . '.bak')) throw new Exception("Could not create backup.");
+        if (file_put_contents(__FILE__, $newContent) === false) throw new Exception("Could not overwrite index.php.");
+
+        return ['status' => 'updated'];
+    }
+
+    protected function actionImportTrello($input) {
+        if (!isset($_FILES['file'])) throw new Exception("No file");
+        $json = json_decode(file_get_contents($_FILES['file']['tmp_name']), true);
+        if (!$json) throw new Exception("Invalid JSON");
+
+        // 1. Create Directories
+        $slug = $this->slugify($json['name'] ?? 'Imported');
+        $slug = substr($slug ?: 'board', 0, 30) . '-' . date('ymd');
+        $baseSlug = $slug;
+        $counter = 1;
+        while(file_exists($this->boardsDir . '/' . $slug)) {
+            $slug = $baseSlug . '-' . $counter++;
+        }
+        $targetDir = $this->boardsDir . '/' . $slug;
+        mkdir($targetDir, 0755, true);
+        mkdir("$targetDir/uploads", 0755, true);
+        mkdir("$targetDir/uploads/avatars", 0755, true);
+
+        // 2. Process Members
+        $usersMap = [];
+        $avatarDir = "$targetDir/uploads/avatars";
+        
+        // Helper to download avatar
+        $downloadAvatar = function($id, $hash) use ($avatarDir, $slug) {
+            if (!$hash) return null;
+            $url = "https://trello-members.s3.amazonaws.com/{$id}/{$hash}/170.png";
+            $filename = "{$id}.png";
+            $content = @file_get_contents($url);
+            if ($content) {
+                file_put_contents("$avatarDir/$filename", $content);
+                return "boards/$slug/uploads/avatars/$filename";
             }
-            echo json_encode(['boards' => $boards]);
-            exit;
+            return null;
+        };
+
+        if (isset($json['members']) && is_array($json['members'])) {
+            foreach ($json['members'] as $m) {
+                $usersMap[$m['id']] = [
+                    'id' => $m['id'],
+                    'username' => $m['username'] ?? '',
+                    'fullName' => $m['fullName'] ?? 'Unknown',
+                    'initials' => $m['initials'] ?? '?',
+                    'avatarHash' => $m['avatarHash'] ?? null,
+                    'avatarFile' => $downloadAvatar($m['id'], $m['avatarHash'] ?? null)
+                ];
+            }
         }
 
-        if ($action === 'create_board') {
-            $title = $input['title'] ?? 'New Board';
-            $slug = $input['slug'] ?: preg_replace('/[^a-z0-9-]/', '', strtolower($title));
-            if (!$slug) $slug = 'board-' . date('ymd');
-            // Unique slug check
-            $baseSlug = $slug;
-            $counter = 1;
-            while(file_exists(getBoardPath($slug))) {
-                 $slug = $baseSlug . '-' . $counter++;
+        // 3. Process Lists
+        $lists = [];
+        $listMap = [];
+        $closedListIds = [];
+        foreach ($json['lists'] as $l) {
+            if ($l['closed']) {
+                $closedListIds[$l['id']] = true;
+                continue;
             }
-
-            $p = getBoardPath($slug);
-            mkdir($p, 0755, true);
-            mkdir("$p/uploads", 0755, true); // Create uploads dir
-            file_put_contents("$p/layout.json", json_encode(['title' => $title, 'lists' => []], JSON_PRETTY_PRINT));
-            file_put_contents("$p/users.json", json_encode([], JSON_PRETTY_PRINT));
-            echo json_encode(['status' => 'ok', 'id' => $slug]);
-            exit;
+            $lists[] = ['id' => $l['id'], 'title' => $l['name'], 'cards' => []];
+            $listMap[$l['id']] = count($lists) - 1;
         }
 
-        if ($action === 'delete_board') {
-            $p = getBoardPath($input['board']);
-            if (is_dir($p) && !is_link($p)) {
-                // Recursive delete for uploads subfolder
-                $files = new RecursiveIteratorIterator(
-                    new RecursiveDirectoryIterator($p, RecursiveDirectoryIterator::SKIP_DOTS),
-                    RecursiveIteratorIterator::CHILD_FIRST
-                  );
+        // 4. Checklists & Actions (Preparation)
+        $checklists = [];
+        foreach ($json['checklists'] ?? [] as $cl) $checklists[$cl['idCard']][] = $cl;
 
-                foreach ($files as $fileinfo) {
-                    $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink');
-                    $todo($fileinfo->getRealPath());
+        $cardMeta = [];
+        foreach (array_reverse($json['actions'] ?? []) as $act) {
+            if (!isset($act['data']['card']['id'])) continue;
+            $cid = $act['data']['card']['id'];
+
+            // Import missing users found in comments
+            if (isset($act['memberCreator']['id']) && !isset($usersMap[$act['memberCreator']['id']])) {
+                $m = $act['memberCreator'];
+                $usersMap[$m['id']] = [
+                    'id' => $m['id'],
+                    'fullName' => $m['fullName'] ?? 'Unknown',
+                    'initials' => $m['initials'] ?? '?',
+                    'avatarFile' => $downloadAvatar($m['id'], $m['avatarHash'] ?? null)
+                ];
+            }
+
+            if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
+
+            // Parse specific action types
+            $actor = $act['memberCreator']['fullName'] ?? 'Someone';
+            $date = $act['date'];
+
+            if ($act['type'] === 'commentCard') {
+                $cardMeta[$cid]['comments'][] = [
+                    'id' => $act['id'], 'text' => $act['data']['text'], 'date' => $date,
+                    'user_id' => $act['memberCreator']['id'] ?? null,
+                    'user' => ['name' => $actor, 'initials' => $act['memberCreator']['initials'] ?? '?']
+                ];
+            } elseif ($act['type'] === 'createCard') {
+                $cardMeta[$cid]['activity'][] = ['text' => "Created by $actor", 'date' => $date];
+            } elseif ($act['type'] === 'updateCard') {
+                if (isset($act['data']['listAfter'])) {
+                    $cardMeta[$cid]['activity'][] = ['text' => "Moved to {$act['data']['listAfter']['name']} by $actor", 'date' => $date];
                 }
-                rmdir($p);
+                if (isset($act['data']['old']['desc'])) {
+                    array_unshift($cardMeta[$cid]['revisions'], [
+                        'id' => $act['id'], 'date' => $date, 'text' => $act['data']['old']['desc'], 'user' => $actor
+                    ]);
+                    $cardMeta[$cid]['activity'][] = ['text' => "Updated description by $actor", 'date' => $date];
+                }
             }
-            echo json_encode(['status' => 'ok']);
-            exit;
         }
 
-        if ($action === 'rename_board') {
-            $oldId = $input['board'];
-            $newTitle = $input['title'];
-            
-            // Generate safe slug from new title
-            $newSlug = preg_replace('/[^a-z0-9-]/i', '-', strtolower($newTitle));
-            $newSlug = preg_replace('/-+/', '-', $newSlug); // remove duplicate dashes
-            $newSlug = trim($newSlug, '-');
-            if (!$newSlug) throw new Exception("Invalid title for URL generation");
+        // 5. Attachments Map
+        $attachmentMap = [];
+        foreach ($json['cards'] as $cTemp) {
+            if (isset($cTemp['attachments'])) {
+                foreach ($cTemp['attachments'] as $att) {
+                    $ext = pathinfo($att['name'], PATHINFO_EXTENSION) ?: pathinfo(parse_url($att['url'], PHP_URL_PATH), PATHINFO_EXTENSION);
+                    $attachmentMap[$att['id']] = [
+                        'url' => $att['url'], 'name' => $att['name'], 'ext' => $ext, 'id' => $att['id']
+                    ];
+                }
+            }
+        }
 
-            $oldPath = getBoardPath($oldId);
-            $newPath = BOARDS_BASE . '/' . $newSlug;
-            // Update title inside layout.json regardless of folder rename
-            $layout = json_decode(file_get_contents("$oldPath/layout.json"), true);
-            $layout['title'] = $newTitle;
-            file_put_contents("$oldPath/layout.json", json_encode($layout, JSON_PRETTY_PRINT));
+        // 6. Process Cards
+        $archive = [];
+        $colorMap = ['green'=>'green', 'yellow'=>'yellow', 'orange'=>'orange', 'red'=>'red', 'purple'=>'purple', 'blue'=>'blue', 'sky'=>'sky', 'lime'=>'lime', 'pink'=>'pink', 'black'=>'slate'];
+        
+        usort($json['cards'], fn($a, $b) => $a['pos'] <=> $b['pos']);
 
-            // If the slug is different, we need to move the folder
-            if ($oldId !== $newSlug) {
-                if (file_exists($newPath)) throw new Exception("A board with this name already exists");
-                // 1. Scan all .md files in the board and fix image links
-                $files = glob("$oldPath/*.md");
-                foreach ($files as $file) {
-                    $content = file_get_contents($file);
-                    // Replace boards/OLD-SLUG/uploads with boards/NEW-SLUG/uploads
-                    $newContent = str_replace("boards/$oldId/uploads/", "boards/$newSlug/uploads/", $content);
-                    if ($content !== $newContent) {
-                        file_put_contents($file, $newContent);
+        foreach ($json['cards'] as $c) {
+            $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
+            $createdDate = date('c', hexdec(substr($c['id'], 0, 8)));
+
+            // Cover Image Logic
+            $coverImagePath = null;
+            if (!empty($c['idAttachmentCover']) && isset($attachmentMap[$c['idAttachmentCover']])) {
+                $att = $attachmentMap[$c['idAttachmentCover']];
+                $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($att['name'], PATHINFO_FILENAME));
+                $filename = strtolower($cleanName . '-' . $att['id'] . '.' . $att['ext']);
+                $coverImagePath = "boards/$slug/uploads/$filename";
+            }
+
+            // Checklists
+            $cardChecklists = [];
+            $checklistStats = ['total' => 0, 'done' => 0];
+            if (isset($checklists[$c['id']])) {
+                foreach ($checklists[$c['id']] as $cl) {
+                    usort($cl['checkItems'], fn($a, $b) => $a['pos'] <=> $b['pos']);
+                    $items = [];
+                    foreach ($cl['checkItems'] as $item) {
+                        $items[] = ['id' => $item['id'], 'name' => $item['name'], 'state' => $item['state']];
+                        $checklistStats['total']++;
+                        if ($item['state'] === 'complete') $checklistStats['done']++;
                     }
-                }
-
-                // 2. Rename the directory
-                rename($oldPath, $newPath);
-                echo json_encode(['status' => 'renamed', 'id' => $newSlug, 'name' => $newTitle]);
-            } else {
-                echo json_encode(['status' => 'updated', 'id' => $oldId, 'name' => $newTitle]);
-            }
-            exit;
-        }
-
-        if ($action === 'load') {
-            $data = json_decode(@file_get_contents("$boardDir/layout.json"), true) ?? [];
-            $users = json_decode(@file_get_contents("$boardDir/users.json"), true) ?? [];
-            
-            if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
-            if (!isset($data['archive'])) $data['archive'] = [];
-            // Ensure archive exists
-            if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
-            // Helper to hydrate
-            $hydrate = function(&$cards) use ($boardDir) {
-                foreach ($cards as &$card) {
-                    $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
-                    $card['labels'] = $card['labels'] ?? [];
-                    $card['startDate'] = $card['startDate'] ?? null;
-                    $card['dueDate'] = $card['dueDate'] ?? null;
-                    $card['assignees'] = $card['assignees'] ?? [];
-                    $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true) ?? [];
-                    $card['commentCount'] = isset($meta['comments']) ? count($meta['comments']) : 0;
-                }
-            };
-
-            foreach ($data['lists'] as &$list) $hydrate($list['cards']);
-            $hydrate($data['archive']);
-            
-            $data['users'] = $users; // Send users registry to frontend
-            echo json_encode($data);
-            exit;
-        }
-
-        if ($action === 'load_card_meta') {
-            $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
-            echo json_encode(array_merge(['comments' => [], 'activity' => [], 'revisions' => [], 'assigned_to' => []], $meta));
-            exit;
-        }
-
-        if ($action === 'save_layout') {
-            foreach ($input['lists'] as &$list) foreach ($list['cards'] as &$card) unset($card['description']);
-            if (isset($input['archive'])) {
-                foreach ($input['archive'] as &$card) unset($card['description']);
-            }
-            file_put_contents("$boardDir/layout.json", json_encode($input, JSON_PRETTY_PRINT));
-            echo json_encode(['status' => 'saved']);
-            exit;
-        }
-
-        if ($action === 'save_card') {
-            file_put_contents("$boardDir/{$input['id']}.md", $input['description'] ?? '');
-            echo json_encode(['status' => 'saved']);
-            exit;
-        }
-
-        if ($action === 'save_card_meta') {
-            file_put_contents("$boardDir/{$input['id']}.json", json_encode($input['meta'], JSON_PRETTY_PRINT));
-            echo json_encode(['status' => 'saved']);
-            exit;
-        }
-
-        if ($action === 'move_card_to_board') {
-            $targetId = $input['target_board'];
-            $cardId = $input['id'];
-            $targetPath = getBoardPath($targetId);
-            
-            if (!file_exists($targetPath)) throw new Exception("Target board not found");
-            // 1. Load Source Layout (Current Board)
-            $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
-            $cardData = null;
-            
-            // Remove from source layout
-            foreach ($sourceLayout['lists'] as &$list) {
-                foreach ($list['cards'] as $key => $card) {
-                    if ($card['id'] == $cardId) {
-                        $cardData = $card;
-                        array_splice($list['cards'], $key, 1);
-                        break 2;
-                    }
-                }
-            }
-            
-            if (!$cardData) throw new Exception("Card not found");
-            // 2. Load Target Layout
-            $targetLayout = json_decode(@file_get_contents("$targetPath/layout.json"), true) ?? [];
-            if (empty($targetLayout['lists'])) {
-                $targetLayout['lists'] = [['id' => 'l1', 'title' => 'Inbox', 'cards' => []]];
-            }
-            if (!isset($targetLayout['title'])) $targetLayout['title'] = $targetId;
-            // Add to the top of the first list in target
-            array_unshift($targetLayout['lists'][0]['cards'], $cardData);
-            // 3. Move Files (.md and .json)
-            $files = ["$cardId.md", "$cardId.json"];
-            foreach ($files as $f) {
-                if (file_exists("$boardDir/$f")) {
-                    rename("$boardDir/$f", "$targetPath/$f");
+                    $cardChecklists[] = ['id' => $cl['id'], 'name' => $cl['name'], 'items' => $items];
                 }
             }
 
-            // NOTE: Images embedded in the MD file are NOT moved automatically.
-            // They will still point to boards/OLD/uploads/. 
-            // In a future update, we could parse and move them, but cross-board linking is valid.
-            // 4. Save both Layouts
-            file_put_contents("$boardDir/layout.json", json_encode($sourceLayout, JSON_PRETTY_PRINT));
-            file_put_contents("$targetPath/layout.json", json_encode($targetLayout, JSON_PRETTY_PRINT));
-            
-            // 5. Add system note to card history
-            $metaFile = "$targetPath/$cardId.json";
-            $meta = json_decode(@file_get_contents($metaFile), true) ?? ['activity' => []];
-            $meta['activity'] = $meta['activity'] ?? [];
-            array_unshift($meta['activity'], [
-                'text' => "Moved from board '{$sourceLayout['title']}' to '{$targetLayout['title']}'",
-                'date' => date('c')
-            ]);
-            file_put_contents($metaFile, json_encode($meta, JSON_PRETTY_PRINT));
-
-            echo json_encode(['status' => 'moved']);
-            exit;
-        }
-
-        if ($action === 'list_uploads') {
-            $uploadsDir = "$boardDir/uploads";
-            if (!is_dir($uploadsDir)) {
-                echo json_encode(['files' => []]);
-                exit;
+            // Labels
+            $mappedLabels = [];
+            foreach ($c['labels'] ?? [] as $l) {
+                $colorKey = $l['color'] ?? 'black';
+                $name = $l['name'];
+                if (empty($name) && isset($json['labelNames'][$colorKey])) $name = $json['labelNames'][$colorKey];
+                $mappedLabels[] = ['color' => $colorMap[$colorKey] ?? 'slate', 'name' => $name ?: ucfirst($colorKey)];
             }
-            
-            // Gather images
-            $files = glob("$uploadsDir/*.{jpg,jpeg,png,gif,webp,JPG,JPEG,PNG,GIF,WEBP}", GLOB_BRACE);
-            
-            // Sort by modification time (newest first)
-            usort($files, function($a, $b) {
-                return filemtime($b) - filemtime($a);
-            });
 
-            // Map to public URLs
-            $urls = array_map(function($f) use ($boardId) {
-                return "boards/$boardId/uploads/" . basename($f);
-            }, $files);
+            $cardData = [
+                'id' => $c['id'], 'title' => $c['name'],
+                'labels' => $mappedLabels,
+                'startDate' => (isset($c['start']) && $c['start']) ? substr($c['start'], 0, 10) : null,
+                'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null,
+                'assignees' => $c['idMembers'] ?? [],
+                'coverImage' => $coverImagePath,
+                'created_at' => $createdDate,
+                'checklistStats' => $checklistStats['total'] > 0 ? $checklistStats : null
+            ];
 
-            echo json_encode(['files' => $urls]);
-            exit;
+            if ($isArchived) $archive[] = $cardData;
+            else $lists[$listMap[$c['idList']]]['cards'][] = $cardData;
+
+            // Save Files
+            file_put_contents("$targetDir/{$c['id']}.md", $c['desc']);
+            
+            $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
+            $meta['activity'] = array_reverse($meta['activity']);
+            $meta['comments'] = array_reverse($meta['comments']);
+            $meta['assigned_to'] = $c['idMembers'] ?? [];
+            $meta['created_at'] = $createdDate;
+            $meta['checklists'] = $cardChecklists;
+            
+            file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
         }
 
-        // Revision Handler
-        if ($action === 'save_revision') {
-            $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
-            $meta['revisions'] = $meta['revisions'] ?? [];
-            
-            array_unshift($meta['revisions'], [
-                'id' => uniqid(),
-                'date' => date('c'),
-                'text' => $input['text'],
-                'user' => $input['user'] ?? 'Unknown'
-            ]);
-            if (count($meta['revisions']) > 50) $meta['revisions'] = array_slice($meta['revisions'], 0, 50);
+        file_put_contents("$targetDir/layout.json", json_encode([
+            'title' => $json['name'], 'lists' => $lists, 'archive' => $archive
+        ], JSON_PRETTY_PRINT));
 
-            file_put_contents("$boardDir/{$input['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
-            echo json_encode(['status' => 'saved']);
-            exit;
-        }
+        file_put_contents("$targetDir/users.json", json_encode($usersMap, JSON_PRETTY_PRINT));
 
-        if ($action === 'delete_card') {
-            if (file_exists("$boardDir/{$input['id']}.md")) unlink("$boardDir/{$input['id']}.md");
-            if (file_exists("$boardDir/{$input['id']}.json")) unlink("$boardDir/{$input['id']}.json");
-            echo json_encode(['status' => 'deleted']);
-            exit;
-        }
+        return ['status' => 'imported', 'board' => $slug];
+    }
 
-        if ($action === 'upload') {
-            if (!isset($_FILES['file'])) throw new Exception('No file');
-            $uploadDir = "$boardDir/uploads";
-            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+    protected function actionSaveUsers($input, $boardId, $boardDir) {
+        file_put_contents("$boardDir/users.json", json_encode($input['users'], JSON_PRETTY_PRINT));
+        return ['status' => 'saved'];
+    }
 
-            // 1. Get Clean Name
-            $rawName = pathinfo($_FILES['file']['name'], PATHINFO_FILENAME);
-            $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
-            $cleanName = preg_replace('/[^a-z0-9-]/i', '-', strtolower($rawName));
-            
-            // 2. Duplicate Detection (Loop until unique)
-            $filename = "$cleanName.$ext";
+    protected function actionUploadAvatar($input, $boardId, $boardDir) {
+        if (!isset($_FILES['file'])) throw new Exception('No file');
+        $dir = "$boardDir/uploads/avatars";
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+
+        $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
+        $filename = uniqid('u_') . ".$ext";
+        move_uploaded_file($_FILES['file']['tmp_name'], "$dir/$filename");
+        
+        return ['url' => "boards/$boardId/uploads/avatars/$filename"];
+    }
+
+    protected function actionImportAttachment($input) {
+        if (!isset($input['board'], $input['card'], $input['url'])) throw new Exception("Missing parameters");
+        
+        $slug = $this->slugify($input['board']);
+        $cardId = $this->slugify($input['card']);
+        $boardPath = $this->boardsDir . '/' . $slug;
+        $uploadDir = "$boardPath/uploads";
+        if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+        // Name Generation
+        $rawName = $input['name'] ?? 'file';
+        $ext = pathinfo($rawName, PATHINFO_EXTENSION) ?: pathinfo(parse_url($input['url'], PHP_URL_PATH), PATHINFO_EXTENSION);
+        $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME));
+        
+        if (!empty($input['attachmentId'])) {
+            $filename = strtolower("$cleanName-{$input['attachmentId']}.$ext");
+        } else {
+            $filename = strtolower("$cleanName.$ext");
             $counter = 1;
-            while (file_exists("$uploadDir/$filename")) {
-                $counter++;
-                $filename = "$cleanName-$counter.$ext";
-            }
-            
-            move_uploaded_file($_FILES['file']['tmp_name'], "$uploadDir/$filename");
-            // Return path including board slug so it's portable
-            echo json_encode(['url' => "boards/$boardId/uploads/$filename"]);
-            exit;
+            while(file_exists("$uploadDir/$filename")) $filename = strtolower("$cleanName-" . $counter++ . ".$ext");
         }
 
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => $e->getMessage()]);
-        exit;
+        // Curl Download
+        $ch = curl_init($input['url']);
+        $fp = fopen("$uploadDir/$filename", 'wb');
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $fp, CURLOPT_HEADER => 0, CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Beckon-Importer)', CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_FAILONERROR => true
+        ]);
+        if (!empty($input['cookies'])) curl_setopt($ch, CURLOPT_COOKIE, $input['cookies']);
+        
+        curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        fclose($fp);
+
+        if ($code >= 400) {
+            @unlink("$uploadDir/$filename");
+            throw new Exception("HTTP Error: $code");
+        }
+
+        // Append to Markdown
+        $mdPath = "$boardPath/$cardId.md";
+        if (file_exists($mdPath)) {
+            $isImg = in_array(strtolower($ext), ['jpg','jpeg','png','gif','webp']);
+            $append = "\n\n" . ($isImg ? '!' : '') . "[$rawName](boards/$slug/uploads/$filename)";
+            file_put_contents($mdPath, $append, FILE_APPEND);
+        }
+        
+        return ['status' => 'ok'];
+    }
+
+    protected function actionListBoards() {
+        $boards = [];
+        foreach (glob($this->boardsDir . '/*', GLOB_ONLYDIR) as $dir) {
+            $id = basename($dir);
+            $layout = json_decode(@file_get_contents("$dir/layout.json"), true);
+            $boards[] = ['id' => $id, 'name' => $layout['title'] ?? $id];
+        }
+        return ['boards' => $boards];
+    }
+
+    protected function actionCreateBoard($input) {
+        $title = $input['title'] ?? 'New Board';
+        $slug = $input['slug'] ?: $this->slugify($title);
+        if (!$slug) $slug = 'board-' . date('ymd');
+
+        $baseSlug = $slug;
+        $counter = 1;
+        while(file_exists($this->getBoardPath($slug))) $slug = $baseSlug . '-' . $counter++;
+
+        $p = $this->getBoardPath($slug);
+        mkdir($p, 0755, true);
+        mkdir("$p/uploads", 0755, true);
+        file_put_contents("$p/layout.json", json_encode(['title' => $title, 'lists' => []], JSON_PRETTY_PRINT));
+        file_put_contents("$p/users.json", json_encode([], JSON_PRETTY_PRINT));
+        
+        return ['status' => 'ok', 'id' => $slug];
+    }
+
+    protected function actionDeleteBoard($input) {
+        $p = $this->getBoardPath($input['board']);
+        if (is_dir($p) && !is_link($p)) {
+            $files = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($p, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($files as $fileinfo) {
+                $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink');
+                $todo($fileinfo->getRealPath());
+            }
+            rmdir($p);
+        }
+        return ['status' => 'ok'];
+    }
+
+    protected function actionRenameBoard($input, $boardId, $boardDir) {
+        $newTitle = $input['title'];
+        $newSlug = $this->slugify($newTitle);
+        if (!$newSlug) throw new Exception("Invalid title");
+
+        $layout = json_decode(file_get_contents("$boardDir/layout.json"), true);
+        $layout['title'] = $newTitle;
+        file_put_contents("$boardDir/layout.json", json_encode($layout, JSON_PRETTY_PRINT));
+
+        if ($boardId !== $newSlug) {
+            $newPath = $this->boardsDir . '/' . $newSlug;
+            if (file_exists($newPath)) throw new Exception("Board exists");
+
+            // Fix MD links
+            foreach (glob("$boardDir/*.md") as $file) {
+                $c = file_get_contents($file);
+                $newC = str_replace("boards/$boardId/uploads/", "boards/$newSlug/uploads/", $c);
+                if ($c !== $newC) file_put_contents($file, $newC);
+            }
+            rename($boardDir, $newPath);
+            return ['status' => 'renamed', 'id' => $newSlug, 'name' => $newTitle];
+        }
+        return ['status' => 'updated', 'id' => $boardId, 'name' => $newTitle];
+    }
+
+    protected function actionLoad($input, $boardId, $boardDir) {
+        $data = json_decode(@file_get_contents("$boardDir/layout.json"), true) ?? [];
+        $users = json_decode(@file_get_contents("$boardDir/users.json"), true) ?? [];
+        
+        if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
+        if (!isset($data['archive'])) $data['archive'] = [];
+        if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
+
+        $hydrate = function(&$cards) use ($boardDir) {
+            foreach ($cards as &$card) {
+                $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
+                $card['labels'] = $card['labels'] ?? [];
+                $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true) ?? [];
+                $card['commentCount'] = isset($meta['comments']) ? count($meta['comments']) : 0;
+            }
+        };
+
+        foreach ($data['lists'] as &$list) $hydrate($list['cards']);
+        $hydrate($data['archive']);
+        $data['users'] = $users;
+        
+        return $data;
+    }
+
+    protected function actionLoadCardMeta($input, $boardId, $boardDir) {
+        $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
+        return array_merge(['comments' => [], 'activity' => [], 'revisions' => [], 'assigned_to' => []], $meta);
+    }
+
+    protected function actionSaveLayout($input, $boardId, $boardDir) {
+        // Strip descriptions
+        foreach ($input['lists'] as &$list) foreach ($list['cards'] as &$card) unset($card['description']);
+        if (isset($input['archive'])) foreach ($input['archive'] as &$card) unset($card['description']);
+        
+        file_put_contents("$boardDir/layout.json", json_encode($input, JSON_PRETTY_PRINT));
+        return ['status' => 'saved'];
+    }
+
+    protected function actionSaveCard($input, $boardId, $boardDir) {
+        file_put_contents("$boardDir/{$input['id']}.md", $input['description'] ?? '');
+        return ['status' => 'saved'];
+    }
+
+    protected function actionSaveCardMeta($input, $boardId, $boardDir) {
+        file_put_contents("$boardDir/{$input['id']}.json", json_encode($input['meta'], JSON_PRETTY_PRINT));
+        return ['status' => 'saved'];
+    }
+
+    protected function actionMoveCardToBoard($input, $boardId, $boardDir) {
+        $targetId = $input['target_board'];
+        $cardId = $input['id'];
+        $targetPath = $this->getBoardPath($targetId);
+        
+        if (!file_exists($targetPath)) throw new Exception("Target board not found");
+
+        $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
+        $cardData = null;
+        
+        foreach ($sourceLayout['lists'] as &$list) {
+            foreach ($list['cards'] as $key => $card) {
+                if ($card['id'] == $cardId) {
+                    $cardData = $card;
+                    array_splice($list['cards'], $key, 1);
+                    break 2;
+                }
+            }
+        }
+        if (!$cardData) throw new Exception("Card not found");
+
+        $targetLayout = json_decode(@file_get_contents("$targetPath/layout.json"), true) ?? [];
+        if (empty($targetLayout['lists'])) $targetLayout['lists'] = [['id' => 'l1', 'title' => 'Inbox', 'cards' => []]];
+        array_unshift($targetLayout['lists'][0]['cards'], $cardData);
+
+        foreach (["$cardId.md", "$cardId.json"] as $f) {
+            if (file_exists("$boardDir/$f")) rename("$boardDir/$f", "$targetPath/$f");
+        }
+
+        file_put_contents("$boardDir/layout.json", json_encode($sourceLayout, JSON_PRETTY_PRINT));
+        file_put_contents("$targetPath/layout.json", json_encode($targetLayout, JSON_PRETTY_PRINT));
+        
+        // Log Activity
+        $metaFile = "$targetPath/$cardId.json";
+        $meta = json_decode(@file_get_contents($metaFile), true) ?? ['activity' => []];
+        $meta['activity'] = $meta['activity'] ?? [];
+        $targetTitle = $targetLayout['title'] ?? $targetId;
+        array_unshift($meta['activity'], ['text' => "Moved from board '{$sourceLayout['title']}' to '{$targetTitle}'", 'date' => date('c')]);
+
+        file_put_contents($metaFile, json_encode($meta, JSON_PRETTY_PRINT));
+
+        return ['status' => 'moved'];
+    }
+
+    protected function actionListUploads($input, $boardId, $boardDir) {
+        $files = glob("$boardDir/uploads/*.{jpg,jpeg,png,gif,webp,JPG,JPEG,PNG,GIF,WEBP}", GLOB_BRACE);
+        usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
+        return ['files' => array_map(fn($f) => "boards/$boardId/uploads/" . basename($f), $files)];
+    }
+
+    protected function actionSaveRevision($input, $boardId, $boardDir) {
+        $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
+        $meta['revisions'] = $meta['revisions'] ?? [];
+        array_unshift($meta['revisions'], [
+            'id' => uniqid(), 'date' => date('c'), 'text' => $input['text'], 'user' => $input['user'] ?? 'Unknown'
+        ]);
+        if (count($meta['revisions']) > 50) $meta['revisions'] = array_slice($meta['revisions'], 0, 50);
+        file_put_contents("$boardDir/{$input['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
+        return ['status' => 'saved'];
+    }
+
+    protected function actionDeleteCard($input, $boardId, $boardDir) {
+        $id = $input['id'];
+        if (file_exists("$boardDir/$id.md")) unlink("$boardDir/$id.md");
+        if (file_exists("$boardDir/$id.json")) unlink("$boardDir/$id.json");
+        return ['status' => 'deleted'];
+    }
+
+    protected function actionUpload($input, $boardId, $boardDir) {
+        if (!isset($_FILES['file'])) throw new Exception('No file');
+        $dir = "$boardDir/uploads";
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+
+        $name = pathinfo($_FILES['file']['name'], PATHINFO_FILENAME);
+        $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
+        $clean = $this->slugify($name);
+        
+        $filename = "$clean.$ext";
+        $counter = 1;
+        while (file_exists("$dir/$filename")) $filename = "$clean-" . $counter++ . ".$ext";
+        
+        move_uploaded_file($_FILES['file']['tmp_name'], "$dir/$filename");
+        return ['url' => "boards/$boardId/uploads/$filename"];
+    }
+
+    // --- Helpers ---
+
+    private function getBoardPath($id) {
+        $clean = $this->slugify($id);
+        if (!$clean || $clean === '.' || $clean === '..') throw new Exception("Invalid ID");
+        return $this->boardsDir . '/' . $clean;
+    }
+
+    private function slugify($text) {
+        $text = preg_replace('/[^a-z0-9-]/i', '-', strtolower($text));
+        return trim(preg_replace('/-+/', '-', $text), '-');
     }
 }
+
+// Instantiate and run
+(new App())->run();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1434,22 +1338,16 @@ if (isset($_GET['action'])) {
                 <a href="https://beckon.run/changelog" class="flex items-center gap-2 group relative">
                     <img src="beckon-icon.webp" class="w-6 h-6 rounded-md shadow-sm opacity-90 group-hover:opacity-100 transition" alt="Beckon Icon">
                     <span class="text-slate-600 group-hover:text-slate-400 transition text-xs font-bold tracking-widest uppercase font-mono">v{{ version }}</span>
-                    
-                    <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-10">
-                        Changelog
-                        <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-[1px] border-4 border-transparent border-t-slate-800"></div>
-                    </div>
                 </a>
-                
                 <span class="text-slate-300">—</span> 
-                
                 <a href="https://github.com/austinginder/beckon" target="_blank" class="text-slate-600 hover:text-slate-400 transition text-xs font-bold tracking-widest uppercase font-mono relative group">
                     Github
-                    <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-10">
-                        Source Code
-                        <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-[1px] border-4 border-transparent border-t-slate-800"></div>
-                    </div>
                 </a>
+                <span v-if="updateAvailable" class="text-slate-700">|</span>
+                <button v-if="updateAvailable" @click="performUpdate" class="flex items-center gap-2 group relative bg-amber-500/10 hover:bg-amber-500/20 px-2 py-1 rounded transition text-amber-500 animate-pulse">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                    <span class="text-xs font-bold tracking-widest uppercase font-mono">Update Available: {{ latestVersion }}</span>
+                </button>
             </div>
         </div>
         <div v-if="showCreateBoardModal" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[80] p-4 backdrop-blur-sm" @click.self="showCreateBoardModal = false">
@@ -1637,1053 +1535,802 @@ if (isset($_GET['action'])) {
             </div>
         </div>
     </div>
-    <script>
-        const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
-        createApp({
-            setup() {
-                marked.setOptions({ gfm: true, breaks: true });
-                const labelColors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink', 'slate'];
-                const version = '<?php echo BECKON_VERSION; ?>';
-                
-                const darkMode = ref(localStorage.getItem('beckon_darkMode') === 'true');
-                const currentBoardId = ref(localStorage.getItem('beckon_last_board') || '');
-                const availableBoards = ref([]);
-                const boardData = ref({ title: 'Loading...', lists: [], archive: [], users: [] });
-                const syncState = ref('synced'); 
-                const isModalOpen = ref(false);
-                const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
-                const activeCardMeta = ref({ comments: [], activity: [], revisions: [], assigned_to: [] });
-                const activityTab = ref('comments');
-                const newComment = ref('');
-                const editingCommentId = ref(null);
-                const editCommentText = ref('');
-                const dragSource = ref(null);
-                const dragTarget = ref(null);
-                const isSidebarOpen = ref(false);
-                const isActivityOpen = ref(localStorage.getItem('beckon_activity_open') !== 'false');
-                const isActivityMaximized = ref(false);
-                const showBoardSelector = ref(false);
-                const splitPaneRatio = ref(50); // Default 50%
-                const splitPaneContainer = ref(null);
-                const isResizing = ref(false);
-                const boardSearch = ref('');
-                const boardSearchInput = ref(null); // Ref for the search input
-                const isBoardSwitcherOpen = ref(false);
-                const showRenameModal = ref(false);
-                const tempBoardTitle = ref('');
-                const showCreateBoardModal = ref(false);
-                const newBoardTitle = ref('');
-                const contextMenu = ref({ show: false, x: 0, y: 0, lIdx: null, cIdx: null });
-                const isArchiveOpen = ref(false);
-                const archiveSearch = ref('');
-                const archiveSearchInput = ref(null);
-                const showImportModal = ref(false);
-                const importStep = ref('preview'); // preview, importing, complete
-                const importMeta = ref({ 
-                    boardName: '', 
-                    cardCount: 0, 
-                    lists: [], 
-                    cards: [], 
-                    attachments: [], // Array of {cardId, url, name}
-                    checklists: [],
-                    actions: []
-                });
-                const importProgress = ref({ current: 0, total: 0, status: '' });
-                const curlInput = ref('');
-                const hasAttachment = (text) => text && text.indexOf('/uploads/') !== -1;
-                const originalDescription = ref('');
-                const revisionIndex = ref(-1); 
-                const isUsersModalOpen = ref(false);
-                const editingUser = ref(null);
-                const showCoverModalState = ref(false);
-                const availableCovers = ref([]);
-                const activeCoverTarget = ref({ lIdx: null, cIdx: null });
-                const isDraggingFile = ref(false);
-                const hoveredCard = ref({ l: null, c: null });
-                let debounceTimer = null;
+<script>
+    const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
 
-                watch(darkMode, (v) => {
-                    document.documentElement.classList.toggle('dark', v);
-                    localStorage.setItem('beckon_darkMode', v);
-                }, { immediate: true });
-                watch(isActivityOpen, (v) => localStorage.setItem('beckon_activity_open', v));
+    createApp({
+        setup() {
+            // --- Configuration & Constants ---
+            marked.setOptions({ gfm: true, breaks: true });
+            const labelColors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink', 'slate'];
+            const version = '<?php echo BECKON_VERSION; ?>';
 
-                const api = async (action, payload = {}) => {
-                    syncState.value = 'saving';
-                    try {
-                        const res = await fetch(`?action=${action}&board=${currentBoardId.value}`, { 
-                            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) 
-                        });
-                        if (!res.ok) throw new Error();
-                        setTimeout(() => syncState.value = 'synced', 500);
-                        return await res.json();
-                    } catch (e) { syncState.value = 'offline'; throw e; }
-                };
-                const saveLocal = () => localStorage.setItem(`beckon_${currentBoardId.value}`, JSON.stringify(boardData.value));
-                const persistLayout = () => { saveLocal(); api('save_layout', boardData.value).then(() => { const b = availableBoards.value.find(b=>b.id===currentBoardId.value); if(b) b.name=boardData.value.title; }).catch(()=>{}); };
-                const persistCardDesc = (c) => { if(c.id) { saveLocal(); api('save_card', {id: c.id, description: c.description}).catch(()=>{}); } };
-                const persistMeta = (id, meta) => { if(id) api('save_card_meta', {id, meta}).catch(()=>{}); };
-                const loadData = async () => {
-                    try { const data = await api('load');
-                    if(data.lists) { boardData.value = data; saveLocal(); return; } } catch(e){}
-                    const local = localStorage.getItem(`beckon_${currentBoardId.value}`);
-                    boardData.value = local ? JSON.parse(local) : { lists: [{ id: 'l1', title: 'Start', cards: [] }], users: [] };
-                };
-                const currentUser = ref(JSON.parse(localStorage.getItem('beckon_user')) || { 
-                    name: 'Guest', initials: 'G', color: 'slate' 
-                });
-                const saveUser = () => {
-                    const parts = currentUser.value.name.trim().split(' ');
-                    currentUser.value.initials = parts.length > 1 ? (parts[0][0] + parts[parts.length-1][0]).toUpperCase() : currentUser.value.name.slice(0,2).toUpperCase();
-                    localStorage.setItem('beckon_user', JSON.stringify(currentUser.value));
-                };
-                const fetchBoards = async () => { try { availableBoards.value = (await (await fetch('?action=list_boards')).json()).boards; } catch(e){} };
-                const switchBoard = async () => { clearTimeout(debounceTimer); localStorage.setItem('beckon_last_board', currentBoardId.value); await loadData(); };
-                const selectBoard = async (id) => { 
-                    currentBoardId.value = id;
-                    boardSearch.value = ''; // Clear search on select
-                    await switchBoard();
-                    showBoardSelector.value = false;
-                    isBoardSwitcherOpen.value = false;
-                };
-                const openRenameModal = () => {
-                    tempBoardTitle.value = boardData.value.title;
-                    showRenameModal.value = true;
-                };
+            // --- Reactive State: Core ---
+            const currentUser = ref(JSON.parse(localStorage.getItem('beckon_user')) || { name: 'Guest', initials: 'G', color: 'slate' });
+            const darkMode = ref(localStorage.getItem('beckon_darkMode') === 'true');
+            const syncState = ref('synced'); // 'synced', 'saving', 'offline'
+            
+            // --- Reactive State: Board Data ---
+            const currentBoardId = ref(localStorage.getItem('beckon_last_board') || '');
+            const availableBoards = ref([]);
+            const boardData = ref({ title: 'Loading...', lists: [], archive: [], users: [] });
+            
+            // --- Reactive State: UI & Modals ---
+            const isModalOpen = ref(false);           // Card Edit Modal
+            const isSidebarOpen = ref(false);         // Card Edit Sidebar
+            const isActivityOpen = ref(localStorage.getItem('beckon_activity_open') !== 'false');
+            const isActivityMaximized = ref(false);
+            const isUsersModalOpen = ref(false);
+            const isBoardSwitcherOpen = ref(false);
+            const showBoardSelector = ref(false);     // Fullscreen selector
+            const showCreateBoardModal = ref(false);
+            const showRenameModal = ref(false);
+            const showImportModal = ref(false);
+            const showCoverModalState = ref(false);
+            const isArchiveOpen = ref(false);
+            
+            // --- Reactive State: Inputs & Temporary ---
+            const boardSearch = ref('');
+            const archiveSearch = ref('');
+            const newBoardTitle = ref('');
+            const tempBoardTitle = ref('');
+            const activityTab = ref('comments');
+            const newComment = ref('');
+            const editCommentText = ref('');
+            const editingCommentId = ref(null);
+            const revisionIndex = ref(-1);
+            const splitPaneRatio = ref(50);
+            const editingUser = ref(null);
+            const curlInput = ref('');
+            
+            // --- Reactive State: Drag & Drop / Context ---
+            const dragSource = ref(null);
+            const dragTarget = ref(null);
+            const hoveredCard = ref({ l: null, c: null });
+            const isDraggingFile = ref(false);
+            const contextMenu = ref({ show: false, x: 0, y: 0, lIdx: null, cIdx: null });
+            const activeCoverTarget = ref({ lIdx: null, cIdx: null });
+            const availableCovers = ref([]);
 
-                const toggleBoardSwitcher = () => {
-                    isBoardSwitcherOpen.value = !isBoardSwitcherOpen.value;
-                    if (isBoardSwitcherOpen.value) {
-                        nextTick(() => {
-                            if (boardSearchInput.value) boardSearchInput.value.focus();
-                        });
-                    }
-                };
-                const saveBoardTitle = async () => {
-                    if (!tempBoardTitle.value.trim()) return;
-                    try {
-                        const res = await api('rename_board', { 
-                            board: currentBoardId.value, 
-                            title: tempBoardTitle.value 
-                        });
-                        // Update local state
-                        boardData.value.title = res.name;
-                        // Handle ID change (rename folder)
-                        const oldId = currentBoardId.value;
-                        if (res.id !== oldId) {
-                            currentBoardId.value = res.id;
-                            // Update URL params without reload
-                            const url = new URL(window.location);
-                            url.searchParams.set('board', res.id);
-                            window.history.pushState({}, '', url);
-                            
-                            // Migrate LocalStorage
-                            const oldStore = localStorage.getItem(`beckon_${oldId}`);
-                            if (oldStore) {
-                                localStorage.setItem(`beckon_${res.id}`, oldStore);
-                                localStorage.removeItem(`beckon_${oldId}`);
-                            }
-                        }
+            // --- Reactive State: Active Card Context ---
+            const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
+            const activeCardMeta = ref({ comments: [], activity: [], revisions: [], assigned_to: [], checklists: [] });
+            const originalDescription = ref('');
+            
+            // --- Reactive State: System/Import ---
+            const updateAvailable = ref(false);
+            const latestVersion = ref('');
+            const importStep = ref('preview');
+            const importProgress = ref({ current: 0, total: 0, status: '' });
+            const importMeta = ref({ boardName: '', cardCount: 0, lists: [], cards: [], attachments: [], checklists: [], actions: [] });
 
-                        // Update available boards list
-                        const b = availableBoards.value.find(b => b.id === oldId);
-                        if(b) { b.id = res.id; b.name = res.name; }
-                        
-                        showRenameModal.value = false;
-                    } catch (e) {
-                        alert(e.message);
-                    }
-                };
-                const handleImportFile = (e) => {
-                    const file = e.target.files[0];
-                    if (!file) return;
+            // --- Refs for DOM Elements ---
+            const boardSearchInput = ref(null);
+            const archiveSearchInput = ref(null);
+            const splitPaneContainer = ref(null);
+            let debounceTimer = null;
 
-                    const reader = new FileReader();
-                    reader.onload = (evt) => {
-                        try {
-                            const json = JSON.parse(evt.target.result);
-                            // Extract Attachments for the Queue
-                            const attachments = [];
-                            // Trello stores cards in json.cards
-                            json.cards.forEach(c => {
-                                if (c.attachments && c.attachments.length > 0) {
-                                    c.attachments.forEach(att => {
-                                        // Only get downloadable files
-                                        if (att.url) {
-                                            attachments.push({
-                                                cardId: c.id,
-                                                url: att.url,
-                                                name: att.name,
-                                                id: att.id
-                                            });
-                                        }
-                                    });
-                                }
-                            });
-                            // Set Meta for Preview
-                            importMeta.value = {
-                                boardName: json.name || 'Imported Board',
-                                cardCount: json.cards.length,
-                                lists: json.lists,
-                                cards: json.cards, // Raw card data
-                                checklists: json.checklists || [],
-                                actions: json.actions || [],
-                                attachments: attachments
-                            };
-                            importStep.value = 'preview';
-                            showImportModal.value = true;
-                            
-                        } catch (err) {
-                            alert("Invalid JSON file");
-                        }
-                        e.target.value = ''; // Reset input
-                    };
-                    reader.readAsText(file);
-                };
 
-                const runImportProcess = async () => {
-                    importStep.value = 'importing';
-                    importProgress.value = { current: 0, total: importMeta.value.attachments.length + 1, status: 'Creating Board Structure...' };
+            // ====================================================================================
+            // 1. API LAYER
+            // ====================================================================================
+            
+            const api = async (action, payload = {}) => {
+                syncState.value = 'saving';
+                try {
+                    const res = await fetch(`?action=${action}&board=${currentBoardId.value}`, { 
+                        method: 'POST', 
+                        headers: { 'Content-Type': 'application/json' }, 
+                        body: JSON.stringify(payload) 
+                    });
+                    if (!res.ok) throw new Error();
+                    setTimeout(() => syncState.value = 'synced', 500);
+                    return await res.json();
+                } catch (e) { 
+                    syncState.value = 'offline'; 
+                    throw e; 
+                }
+            };
 
-                    let authCookies = '';
-                    if (curlInput.value) {
-                        // Regex looks for -b '...' or --cookie '...'
-                        // It captures everything inside the single quotes
-                        const match = curlInput.value.match(/(?:-b|--cookie)\s+'([^']+)'/);
-                        if (match && match[1]) {
-                            authCookies = match[1];
-                        }
-                    }
+            const saveLocal = () => localStorage.setItem(`beckon_${currentBoardId.value}`, JSON.stringify(boardData.value));
+            
+            const persistLayout = () => { 
+                saveLocal(); 
+                api('save_layout', boardData.value).then(() => { 
+                    const b = availableBoards.value.find(b => b.id === currentBoardId.value); 
+                    if(b) b.name = boardData.value.title; 
+                }).catch(()=>{}); 
+            };
 
-                    try {
-                        // ... (Step 1: Board creation remains the same) ...
-                        const structurePayload = {
-                            name: importMeta.value.boardName,
-                            lists: importMeta.value.lists,
-                            cards: importMeta.value.cards,
-                            checklists: importMeta.value.checklists,
-                            actions: importMeta.value.actions,
-                            members: importMeta.value.members || [], // Ensure members are passed
-                            labelNames: importMeta.value.labelNames || [] // Ensure labels are passed
-                        };
-                        const blob = new Blob([JSON.stringify(structurePayload)], { type: "application/json" });
-                        const fd = new FormData();
-                        fd.append('file', blob, 'import.json');
-                        const res = await (await fetch(`?action=import_trello`, { method:'POST', body:fd })).json();
-                        
-                        if (!res.board) throw new Error("Board creation failed");
-                        const newBoardSlug = res.board;
-                        importProgress.value.current = 1;
+            const persistCardDesc = (c) => { 
+                if(c.id) { 
+                    saveLocal(); 
+                    api('save_card', {id: c.id, description: c.description}).catch(()=>{}); 
+                } 
+            };
 
-                        // Step 2: Process Attachments with Cookies
-                        for (const [index, att] of importMeta.value.attachments.entries()) {
-                            importProgress.value.status = `Downloading attachment ${index + 1} of ${importMeta.value.attachments.length}...`;
-                            await api('import_attachment', {
-                                board: newBoardSlug,
-                                card: att.cardId,
-                                url: att.url,
-                                name: att.name,
-                                attachmentId: att.id,
-                                cookies: authCookies
-                            });
+            const persistMeta = (id, meta) => { 
+                if(id) api('save_card_meta', {id, meta}).catch(()=>{}); 
+            };
 
-                            importProgress.value.current++;
-                        }
-
-                        importStep.value = 'complete';
-                        importProgress.value.status = 'Done!';
-                        
-                        await fetchBoards();
-                        currentBoardId.value = newBoardSlug;
-                        await switchBoard();
-                        setTimeout(() => { showImportModal.value = false; curlInput.value = ''; }, 1500);
-                    } catch (err) {
-                        alert("Import Error: " + err.message);
-                        showImportModal.value = false;
-                    }
-                };
-                const createBoard = async () => {
-                    if (!newBoardTitle.value.trim()) return;
-                    const title = newBoardTitle.value;
-                    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-                    
-                    await api('create_board', {title, slug}); 
-                    await fetchBoards(); 
-                    
-                    currentBoardId.value = slug;
-                    await switchBoard();
-                    
-                    // Reset and close
-                    newBoardTitle.value = '';
-                    showCreateBoardModal.value = false;
-                    showBoardSelector.value = false;
-                };
-                const deleteBoard = async () => { 
-                    if(confirm("Delete Board?")) { 
-                        await api('delete_board', {board: currentBoardId.value});
-                        await fetchBoards();
-                        
-                        if (availableBoards.value.length > 0) {
-                            // Switch to the first available board
-                            currentBoardId.value = availableBoards.value[0].id;
-                            await switchBoard();
-                        } else {
-                            // No boards left, show selector
-                            currentBoardId.value = '';
-                            boardData.value = { title: 'No Boards', lists: [] };
-                            showBoardSelector.value = true;
-                        }
+            const loadData = async () => {
+                // Try network first
+                try { 
+                    const data = await api('load');
+                    if(data.lists) { 
+                        boardData.value = data; 
+                        saveLocal(); 
+                        return; 
                     } 
-                };
-                const moveCardToBoard = async (e) => {
-                    const targetBoardId = e.target.value;
-                    const targetBoardName = availableBoards.value.find(b => b.id === targetBoardId)?.name || 'target board';
-                    if (!confirm(`Move this card to "${targetBoardName}"?`)) {
-                        e.target.value = ""; // Reset dropdown if cancelled
-                        return;
-                    }
+                } catch(e){}
+                // Fallback to local
+                const local = localStorage.getItem(`beckon_${currentBoardId.value}`);
+                boardData.value = local ? JSON.parse(local) : { lists: [{ id: 'l1', title: 'Start', cards: [] }], users: [] };
+            };
 
-                    const { id } = activeCard.value.data;
-                    try {
-                        await api('move_card_to_board', { id, target_board: targetBoardId });
-                        if (activeCard.value.listIndex === 'archive') {
-                            boardData.value.archive.splice(activeCard.value.cardIndex, 1);
-                        } else {
-                            boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
-                        }
-                        
-                        // Remove card from local UI immediately
-                        boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
-                        // Update local storage so the card doesn't reappear on refresh
-                        saveLocal();
-                        closeModal();
-                    } catch (err) {
-                        alert("Failed to move card: " + err.message);
-                        e.target.value = ""; // Reset dropdown on failure
-                    }
-                };
-                const archiveCardContext = (lIdx, cIdx) => {
-                    const card = boardData.value.lists[lIdx].cards[cIdx];
-                    if (!confirm(`Archive "${card.title}"?`)) return;
 
-                    // 1. Move to Archive
-                    boardData.value.archive.unshift(card);
-                    boardData.value.lists[lIdx].cards.splice(cIdx, 1);
+            // ====================================================================================
+            // 2. COMPUTED PROPERTIES
+            // ====================================================================================
+
+            const filteredBoards = computed(() => {
+                if (!boardSearch.value) return availableBoards.value;
+                const q = boardSearch.value.toLowerCase();
+                return availableBoards.value.filter(b => b.name.toLowerCase().includes(q) || b.id.toLowerCase().includes(q));
+            });
+
+            const filteredArchive = computed(() => {
+                if (!boardData.value.archive) return [];
+                const q = archiveSearch.value.toLowerCase();
+                return boardData.value.archive.filter(c => c.title.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q));
+            });
+
+            const compiledMarkdown = computed(() => {
+                const text = revisionIndex.value > -1 ? activeCardMeta.value.revisions[revisionIndex.value].text : activeCard.value.data.description;
+                return marked.parse(text || '').replace(/disabled=""/g, '').replace(/disabled/g, '');
+            });
+
+            const editorStats = computed(() => {
+                const text = activeCard.value.data.description || '';
+                const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+                return { words, readTime: Math.ceil(words / 200) };
+            });
+
+            const syncStatusColor = computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value]));
+            const syncMessage = computed(() => syncState.value.toUpperCase());
+
+
+            // ====================================================================================
+            // 3. BOARD ACTIONS
+            // ====================================================================================
+
+            const fetchBoards = async () => { 
+                try { availableBoards.value = (await (await fetch('?action=list_boards')).json()).boards; } catch(e){} 
+            };
+
+            const switchBoard = async () => { 
+                clearTimeout(debounceTimer); 
+                localStorage.setItem('beckon_last_board', currentBoardId.value); 
+                await loadData(); 
+            };
+
+            const selectBoard = async (id) => { 
+                currentBoardId.value = id;
+                boardSearch.value = ''; 
+                await switchBoard();
+                showBoardSelector.value = false;
+                isBoardSwitcherOpen.value = false;
+            };
+
+            const createBoard = async () => {
+                if (!newBoardTitle.value.trim()) return;
+                const title = newBoardTitle.value;
+                const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+                
+                await api('create_board', {title, slug}); 
+                await fetchBoards(); 
+                
+                currentBoardId.value = slug;
+                await switchBoard();
+                
+                newBoardTitle.value = '';
+                showCreateBoardModal.value = false;
+                showBoardSelector.value = false;
+            };
+
+            const saveBoardTitle = async () => {
+                if (!tempBoardTitle.value.trim()) return;
+                try {
+                    const res = await api('rename_board', { board: currentBoardId.value, title: tempBoardTitle.value });
+                    boardData.value.title = res.name;
                     
-                    // 2. Save
-                    persistLayout();
-                    // 3. Log Activity
+                    if (res.id !== currentBoardId.value) {
+                        const oldId = currentBoardId.value;
+                        currentBoardId.value = res.id;
+                        // Migrate LocalStorage
+                        const oldStore = localStorage.getItem(`beckon_${oldId}`);
+                        if (oldStore) {
+                            localStorage.setItem(`beckon_${res.id}`, oldStore);
+                            localStorage.removeItem(`beckon_${oldId}`);
+                        }
+                        // Update URL
+                        const url = new URL(window.location);
+                        url.searchParams.set('board', res.id);
+                        window.history.pushState({}, '', url);
+                    }
+                    // Update list
+                    const b = availableBoards.value.find(b => b.id === currentBoardId.value);
+                    if(b) { b.id = res.id; b.name = res.name; } // bugfix: look by old ID isn't possible if we just changed currentBoardId, but logic mostly holds for renaming
+                    else { await fetchBoards(); }
+
+                    showRenameModal.value = false;
+                } catch (e) { alert(e.message); }
+            };
+
+            const deleteBoard = async () => { 
+                if(confirm("Delete Board?")) { 
+                    await api('delete_board', {board: currentBoardId.value});
+                    await fetchBoards();
+                    if (availableBoards.value.length > 0) {
+                        currentBoardId.value = availableBoards.value[0].id;
+                        await switchBoard();
+                    } else {
+                        currentBoardId.value = '';
+                        boardData.value = { title: 'No Boards', lists: [] };
+                        showBoardSelector.value = true;
+                    }
+                } 
+            };
+
+
+            // ====================================================================================
+            // 4. CARD ACTIONS
+            // ====================================================================================
+
+            const addList = () => { boardData.value.lists.push({ id: 'l'+Date.now(), title: 'New List', cards: [] }); persistLayout(); };
+            const deleteList = (i) => { if(confirm('Delete list?')) { boardData.value.lists.splice(i, 1); persistLayout(); } };
+            
+            const addCard = (lIdx) => {
+                const now = new Date().toISOString();
+                const c = { id: Date.now(), title: 'New Card', description: '', labels: [], dueDate: null, assignees: [], commentCount: 0, created_at: now };
+                boardData.value.lists[lIdx].cards.push(c);
+                persistLayout(); 
+                persistCardDesc(c);
+                persistMeta(c.id, { created_at: now, comments: [], activity: [{ text: 'Card created', date: now }], revisions: [], assigned_to: [] });
+            };
+
+            const deleteActiveCard = () => {
+                if(!confirm("Delete?")) return;
+                const { id } = activeCard.value.data;
+                if (activeCard.value.listIndex === 'archive') boardData.value.archive.splice(activeCard.value.cardIndex, 1);
+                else boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
+                persistLayout();
+                api('delete_card', { id }); 
+                isModalOpen.value = false;
+            };
+
+            const cloneCard = (lIdx, cIdx) => {
+                const original = boardData.value.lists[lIdx].cards[cIdx];
+                const newCard = JSON.parse(JSON.stringify(original));
+                newCard.id = Date.now();
+                newCard.title += ' (Copy)';
+                boardData.value.lists[lIdx].cards.splice(cIdx + 1, 0, newCard);
+                persistLayout();
+                
+                if (original.description) {
+                    newCard.description = original.description;
+                    persistCardDesc(newCard);
+                }
+                persistMeta(newCard.id, { comments: [], activity: [{ text: 'Card duplicated', date: new Date().toISOString() }], revisions: [], assigned_to: [] });
+            };
+
+            const moveCardToBoard = async (e) => {
+                const targetBoardId = e.target.value;
+                const targetBoardName = availableBoards.value.find(b => b.id === targetBoardId)?.name || 'target board';
+                if (!confirm(`Move this card to "${targetBoardName}"?`)) { e.target.value = ""; return; }
+                try {
+                    await api('move_card_to_board', { id: activeCard.value.data.id, target_board: targetBoardId });
+                    if (activeCard.value.listIndex === 'archive') boardData.value.archive.splice(activeCard.value.cardIndex, 1);
+                    else boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
+                    saveLocal();
+                    closeModal();
+                } catch (err) { alert("Failed: " + err.message); e.target.value = ""; }
+            };
+
+            const openCardModal = async (lIdx, cIdx) => {
+                const isArchived = lIdx === 'archive';
+                const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
+                activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: card };
+                originalDescription.value = card.description || ''; 
+                revisionIndex.value = -1;
+                isSidebarOpen.value = false; 
+                isModalOpen.value = true;
+                activeCardMeta.value = { comments: [], activity: [], revisions: [], assigned_to: [], checklists: [] };
+                
+                if(card.id) try { 
+                    const m = await api('load_card_meta', {id: card.id});
+                    activeCardMeta.value = { 
+                        comments: m.comments||[], activity: m.activity||[], revisions: m.revisions||[], assigned_to: m.assigned_to||[], checklists: m.checklists||[]
+                    };
+                } catch(e){}
+            };
+
+            const debouncedSaveCard = () => { 
+                saveLocal(); 
+                syncState.value='saving'; 
+                clearTimeout(debounceTimer); 
+                debounceTimer = setTimeout(() => { persistCardDesc(activeCard.value.data); syncState.value='synced'; }, 1000); 
+            };
+
+            const closeModal = () => { 
+                // Revision Logic
+                if (activeCard.value.data.description !== originalDescription.value) {
+                    const newRev = { id: Date.now().toString(), date: new Date().toISOString(), text: originalDescription.value, user: currentUser.value.name };
+                    activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
+                    activeCardMeta.value.revisions.unshift(newRev);
+                    if (activeCardMeta.value.revisions.length > 50) activeCardMeta.value.revisions = activeCardMeta.value.revisions.slice(0, 50);
+                    activeCardMeta.value.activity.unshift({ text: 'Modified description', date: new Date().toISOString() });
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                }
+                isModalOpen.value = false;
+                persistLayout(); 
+                persistCardDesc(activeCard.value.data); 
+            };
+
+
+            // ====================================================================================
+            // 5. CHECKLISTS, COMMENTS, & ATTACHMENTS
+            // ====================================================================================
+
+            const createChecklist = () => {
+                const name = prompt("New Checklist Name:", "Checklist");
+                if (!name) return;
+                activeCardMeta.value.checklists = activeCardMeta.value.checklists || [];
+                activeCardMeta.value.checklists.push({ id: Date.now().toString(), name: name, items: [] });
+                persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                updateCardStats();
+            };
+
+            const updateCardStats = () => {
+                let total = 0, done = 0;
+                if (activeCardMeta.value.checklists) {
+                    activeCardMeta.value.checklists.forEach(cl => cl.items.forEach(i => { total++; if(i.state === 'complete') done++; }));
+                }
+                activeCard.value.data.checklistStats = total > 0 ? { total, done } : null;
+                persistLayout();
+            };
+
+            const addComment = () => {
+                if (!newComment.value.trim()) return;
+                activeCardMeta.value.comments.unshift({ 
+                    id: Date.now(), text: newComment.value, date: new Date().toISOString(), 
+                    user_id: currentUser.value.id, user: { ...currentUser.value } 
+                });
+                activeCard.value.data.commentCount = (activeCard.value.data.commentCount || 0) + 1;
+                newComment.value = ''; 
+                persistMeta(activeCard.value.data.id, activeCardMeta.value);
+            };
+
+            const uploadFile = (file) => {
+                if (!file) return;
+                isDraggingFile.value = false;
+                const fd = new FormData(); fd.append('file', file);
+                fetch(`?action=upload&board=${currentBoardId.value}`, {method:'POST', body:fd})
+                    .then(r=>r.json())
+                    .then(res => {
+                        if(res.url) {
+                            const el = document.getElementById('editor-textarea');
+                            const v = activeCard.value.data.description || '';
+                            const start = el ? el.selectionStart : v.length;
+                            const end = el ? el.selectionEnd : v.length;
+                            activeCard.value.data.description = v.slice(0, start) + `\n![Image](${res.url})\n` + v.slice(end);
+                            debouncedSaveCard();
+                        }
+                    });
+            };
+
+
+            // ====================================================================================
+            // 6. DRAG & DROP
+            // ====================================================================================
+
+            const startDrag = (e, l, c) => { dragSource.value = { l, c }; e.dataTransfer.effectAllowed = 'move'; };
+            
+            const onCardDragOver = (e, l, c) => {
+                if (!dragSource.value || (dragSource.value.l === l && dragSource.value.c === c)) { dragTarget.value = null; return; }
+                const rect = e.currentTarget.getBoundingClientRect();
+                dragTarget.value = { l, c, pos: e.clientY < (rect.top + rect.height/2) ? 'top' : 'bottom' };
+            };
+            
+            const onListDragOver = (e, l) => { if (dragSource.value && !(dragTarget.value?.l === l && dragTarget.value?.c !== null)) dragTarget.value = { l, c: null, pos: 'bottom' }; };
+            
+            const onDrop = () => {
+                if (!dragSource.value || !dragTarget.value) return;
+                const { l: sL, c: sC } = dragSource.value;
+                const { l: tL, c: tC, pos } = dragTarget.value;
+                const card = boardData.value.lists[sL].cards[sC];
+                
+                boardData.value.lists[sL].cards.splice(sC, 1);
+                let idx = tC === null ? boardData.value.lists[tL].cards.length : tC;
+                if (sL === tL && sC < tC) idx--;
+                if (pos === 'bottom' && tC !== null) idx++;
+                boardData.value.lists[tL].cards.splice(idx, 0, card);
+                
+                if (sL !== tL) {
                     api('load_card_meta', {id: card.id}).then(m => {
                         m.activity = m.activity || [];
-                        m.activity.unshift({ text: 'Archived card', date: new Date().toISOString() });
+                        m.activity.unshift({ text: `Moved to ${boardData.value.lists[tL].title}`, date: new Date().toISOString() });
                         persistMeta(card.id, m);
                     });
-                };
+                }
+                dragSource.value = null; dragTarget.value = null; persistLayout();
+            };
 
-                const toggleCheckItem = (clIdx, itemIdx) => {
-                    const cl = activeCardMeta.value.checklists[clIdx];
-                    const item = cl.items[itemIdx];
-                    item.state = item.state === 'complete' ? 'incomplete' : 'complete';
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                    updateCardStats();
-                };
 
-                const updateCardStats = () => {
-                    let total = 0;
-                    let done = 0;
-                    
-                    if (activeCardMeta.value.checklists) {
-                        activeCardMeta.value.checklists.forEach(cl => {
-                            cl.items.forEach(i => {
-                                total++;
-                                if(i.state === 'complete') done++;
-                            });
-                        });
+            // ====================================================================================
+            // 7. USER MANAGEMENT
+            // ====================================================================================
+
+            const getUser = (id) => boardData.value.users?.[id] || null;
+            const getUserAvatar = (id) => {
+                const u = getUser(id);
+                if (!u) return null;
+                return u.avatarFile || (u.avatarHash ? `https://trello-members.s3.amazonaws.com/${u.id}/${u.avatarHash}/170.png` : null);
+            };
+            const getUserInitials = (id) => getUser(id)?.initials || null;
+            const getUserName = (id) => getUser(id)?.fullName || null;
+
+            const saveUser = () => {
+                const parts = currentUser.value.name.trim().split(' ');
+                currentUser.value.initials = parts.length > 1 ? (parts[0][0] + parts[parts.length-1][0]).toUpperCase() : currentUser.value.name.slice(0,2).toUpperCase();
+                localStorage.setItem('beckon_user', JSON.stringify(currentUser.value));
+            };
+
+            const saveUserEntry = async () => {
+                if (!editingUser.value.fullName) return alert("Name required");
+                if (!boardData.value.users) boardData.value.users = {};
+                boardData.value.users[editingUser.value.id] = editingUser.value;
+                await api('save_users', { users: boardData.value.users });
+                editingUser.value = null;
+            };
+
+            
+            // ====================================================================================
+            // 7b. CONTEXT & ARCHIVE HELPERS (Defined here so onMounted can use them)
+            // ====================================================================================
+
+            const archiveCardContext = (l, c) => {
+                const card = boardData.value.lists[l].cards[c];
+                if(!confirm(`Archive "${card.title}"?`)) return;
+                
+                // 1. Move to Archive
+                boardData.value.archive.unshift(card);
+                boardData.value.lists[l].cards.splice(c, 1);
+                persistLayout();
+                
+                // 2. Log Activity
+                api('load_card_meta', {id: card.id}).then(m => {
+                    m.activity = m.activity || [];
+                    m.activity.unshift({ text: 'Archived card (Shortcut)', date: new Date().toISOString() });
+                    persistMeta(card.id, m);
+                });
+            };
+
+            // ====================================================================================
+            // 8. LIFECYCLE & WATCHERS
+            // ====================================================================================
+
+            watch(darkMode, (v) => { document.documentElement.classList.toggle('dark', v); localStorage.setItem('beckon_darkMode', v); }, { immediate: true });
+            watch(isActivityOpen, (v) => localStorage.setItem('beckon_activity_open', v));
+
+            onMounted(async () => { 
+                await fetchBoards();
+                // Check updates
+                try {
+                    const res = await api('check_updates');
+                    if (res.update_available) { updateAvailable.value = true; latestVersion.value = res.latest_version; }
+                } catch (e) { console.error("Update check failed", e); }
+
+                if (availableBoards.value.length === 0) {
+                    showBoardSelector.value = true;
+                } else {
+                    if (!currentBoardId.value || !availableBoards.value.find(b => b.id === currentBoardId.value)) {
+                        currentBoardId.value = availableBoards.value[0].id;
                     }
-                    
-                    if (total > 0) {
-                        activeCard.value.data.checklistStats = { total, done };
-                    } else {
-                        activeCard.value.data.checklistStats = null;
-                    }
-                    
-                    persistLayout(); // Save the new counts to layout.json
-                };
+                    await switchBoard(); 
+                }
 
-                const archiveActiveCard = () => {
-                    if (!confirm("Archive this card?")) return;
-                    const { id } = activeCard.value.data;
-                    
-                    // 1. Move
+                window.addEventListener('click', () => { if (contextMenu.value.show) contextMenu.value.show = false; });
+                
+                // Keyboard Shortcuts
+                window.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        if (showCreateBoardModal.value) showCreateBoardModal.value = false;
+                        else if (showRenameModal.value) showRenameModal.value = false;
+                        else if (isBoardSwitcherOpen.value) isBoardSwitcherOpen.value = false;
+                        else if (isModalOpen.value) closeModal();
+                        else if (showBoardSelector.value) showBoardSelector.value = false;
+                    }
+                    if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+                    if (isModalOpen.value || showCreateBoardModal.value || showRenameModal.value || showBoardSelector.value || isUsersModalOpen.value) return;
+
+                    if (hoveredCard.value.l !== null && hoveredCard.value.c !== null) {
+                        if (e.key === 'Enter') { e.preventDefault(); openCardModal(hoveredCard.value.l, hoveredCard.value.c); }
+                        if (e.key.toLowerCase() === 'c') { 
+                            e.preventDefault(); 
+                            const c = boardData.value.lists[hoveredCard.value.l].cards[hoveredCard.value.c];
+                            if(confirm(`Archive "${c.title}"?`)) {
+                                boardData.value.archive.unshift(c);
+                                boardData.value.lists[hoveredCard.value.l].cards.splice(hoveredCard.value.c, 1);
+                                persistLayout();
+                                hoveredCard.value = { l: null, c: null };
+                            }
+                        }
+                    }
+                });
+            });
+
+
+            // ====================================================================================
+            // 9. EXPORT
+            // ====================================================================================
+            return {
+                // Config & State
+                version, currentUser, darkMode, syncState, syncStatusColor, syncMessage,
+                boardData, currentBoardId, availableBoards, 
+                
+                // UI Controls
+                isModalOpen, isSidebarOpen, isActivityOpen, isActivityMaximized, activityTab,
+                showBoardSelector, isBoardSwitcherOpen, showCreateBoardModal, showRenameModal, 
+                showImportModal, showCoverModalState, isArchiveOpen, isUsersModalOpen,
+                
+                // Search & Filters
+                boardSearch, boardSearchInput, filteredBoards, 
+                archiveSearch, archiveSearchInput, filteredArchive,
+                
+                // Card Editor Data
+                activeCard, activeCardMeta, editorStats, compiledMarkdown, originalDescription, revisionIndex,
+                splitPaneRatio, splitPaneContainer, isDraggingFile,
+                
+                // Forms
+                newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText,
+                editingUser, curlInput,
+                
+                // Drag & Drop
+                dragTarget, startDrag, onDrop, onCardDragOver, onListDragOver, hoveredCard,
+
+                // Trello Import
+                importMeta, importStep, importProgress,
+
+                // Methods: Board
+                selectBoard, switchBoard, createBoard, deleteBoard, saveBoardTitle, openRenameModal: () => { tempBoardTitle.value = boardData.value.title; showRenameModal.value = true; },
+                toggleBoardSwitcher: () => { isBoardSwitcherOpen.value = !isBoardSwitcherOpen.value; if(isBoardSwitcherOpen.value) nextTick(() => boardSearchInput.value?.focus()); },
+
+                // Methods: Lists
+                addList, deleteList, persistLayout,
+
+                // Methods: Cards
+                addCard, deleteActiveCard, openCardModal, closeModal, moveCardToBoard, debouncedSaveCard, 
+                cloneCard, 
+                
+                // Methods: Comments/Activity
+                addComment, deleteComment: (id) => { 
+                    if(!confirm('Delete?')) return; 
+                    activeCardMeta.value.comments = activeCardMeta.value.comments.filter(c=>c.id!==id); 
+                    activeCard.value.data.commentCount--; 
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value); 
+                },
+                startEditComment: (c) => { editingCommentId.value = c.id; editCommentText.value = c.text; },
+                saveEditComment: () => { 
+                    const c = activeCardMeta.value.comments.find(c=>c.id===editingCommentId.value);
+                    if(c){ c.text=editCommentText.value; c.editedDate=new Date().toISOString(); persistMeta(activeCard.value.data.id, activeCardMeta.value); }
+                    editingCommentId.value=null; 
+                },
+                restoreRevision: () => { 
+                    if(revisionIndex.value>-1 && confirm("Restore?")) { 
+                        activeCard.value.data.description = activeCardMeta.value.revisions[revisionIndex.value].text; 
+                        revisionIndex.value=-1; 
+                        debouncedSaveCard(); 
+                    } 
+                },
+
+                // Methods: Users
+                saveUser, createNewUser: () => { editingUser.value = { id: 'u_'+Date.now(), fullName: '', username: '', initials: '', avatarFile: null }; },
+                editUser: (u) => editingUser.value = JSON.parse(JSON.stringify(u)),
+                saveUserEntry,
+                updateInitials: () => { 
+                    if(!editingUser.value.fullName) return; 
+                    const p = editingUser.value.fullName.trim().split(' '); 
+                    editingUser.value.initials = p.length>1 ? (p[0][0]+p[p.length-1][0]).toUpperCase() : editingUser.value.fullName.slice(0,2).toUpperCase(); 
+                },
+                handleAvatarUpload: async (e) => { 
+                    const fd = new FormData(); fd.append('file', e.target.files[0]);
+                    const res = await (await fetch(`?action=upload_avatar&board=${currentBoardId.value}`, {method:'POST', body:fd})).json();
+                    if(res.url) editingUser.value.avatarFile = res.url; 
+                },
+                loginAs: (u) => { currentUser.value = { name: u.fullName, initials: u.initials, color: 'blue', id: u.id }; saveUser(); isUsersModalOpen.value = false; alert(`Logged in as ${u.fullName}`); },
+                openUsersModal: () => { isUsersModalOpen.value = true; editingUser.value = null; },
+                getUserAvatar, getUserInitials, getUserName,
+
+                // Methods: Utils & Formatting
+                labelColors, 
+                formatTime: (iso) => dayjs(iso).fromNow(),
+                formatDateShort: (iso) => dayjs(iso).format('MMM D'),
+                getDueDateColor: (d) => { const diff = dayjs(d).diff(dayjs(), 'day'); return diff < 0 ? 'bg-red-100 text-red-600' : diff <= 2 ? 'bg-yellow-100 text-yellow-600' : 'bg-slate-200 text-slate-500'; },
+                hasAttachment: (text) => text && text.indexOf('/uploads/') !== -1,
+                getTaskStats: (card) => card.checklistStats || { total: (card.description||'').match(/- \[[ xX]\]/g)?.length||0, done: (card.description||'').match(/- \[[xX]\]/g)?.length||0 },
+                renderMarkdown: (t) => marked.parse(t || '').replace(/disabled=""/g, ''),
+                
+                // Methods: Uploads
+                handleFileInput: (e) => uploadFile(e.target.files[0]),
+                handleImageDrop: (e) => { isDraggingFile.value=false; const f=e.dataTransfer.files[0]; if(f&&f.type.startsWith('image/')) uploadFile(f); },
+                
+                // Methods: Checklists
+                createChecklist, 
+                deleteChecklist: (i) => { if(confirm("Delete checklist?")) { activeCardMeta.value.checklists.splice(i,1); persistMeta(activeCard.value.data.id, activeCardMeta.value); updateCardStats(); } },
+                addChecklistItem: (e, i) => { 
+                    const v=e.target.value.trim(); if(!v)return; 
+                    activeCardMeta.value.checklists[i].items.push({ id:Date.now().toString(), name:v, state:'incomplete' }); 
+                    e.target.value=''; persistMeta(activeCard.value.data.id, activeCardMeta.value); updateCardStats(); 
+                },
+                toggleCheckItem: (cI, iI) => { 
+                    const item = activeCardMeta.value.checklists[cI].items[iI]; 
+                    item.state = item.state==='complete'?'incomplete':'complete'; 
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value); 
+                    updateCardStats(); 
+                },
+                deleteChecklistItem: (cI, iI) => { 
+                    activeCardMeta.value.checklists[cI].items.splice(iI, 1); 
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value); 
+                    updateCardStats(); 
+                },
+
+                // Methods: Archive
+                toggleArchive: () => { isArchiveOpen.value = !isArchiveOpen.value; if(isArchiveOpen.value) nextTick(() => archiveSearchInput.value?.focus()); },
+                restoreArchivedCard: () => {
+                    const c = boardData.value.archive[activeCard.value.cardIndex];
+                    boardData.value.archive.splice(activeCard.value.cardIndex, 1);
+                    boardData.value.lists[0].cards.unshift(c);
+                    activeCard.value.listIndex = 0; activeCard.value.cardIndex = 0;
+                    persistLayout();
+                    activeCardMeta.value.activity.unshift({ text: 'Restored from archive', date: new Date().toISOString() });
+                    persistMeta(c.id, activeCardMeta.value);
+                },
+                archiveActiveCard: () => {
+                    if (!confirm("Archive?")) return;
                     boardData.value.archive.unshift(activeCard.value.data);
                     boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
-                    
-                    // 2. Save & Close
                     persistLayout();
-                    // 3. Log
-                    activeCardMeta.value.activity.unshift({ text: 'Archived card', date: new Date().toISOString() });
-                    persistMeta(id, activeCardMeta.value);
-                    
+                    activeCardMeta.value.activity.unshift({ text: 'Archived', date: new Date().toISOString() });
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
                     isModalOpen.value = false;
-                };
+                },
 
-                const restoreArchivedCard = () => {
-                    // 1. Restore to first list (Inbox usually)
-                    const card = boardData.value.archive[activeCard.value.cardIndex];
-                    boardData.value.archive.splice(activeCard.value.cardIndex, 1);
-                    boardData.value.lists[0].cards.unshift(card);
-                    
-                    // 2. Update Active View Context so it doesn't crash
-                    activeCard.value.listIndex = 0;
-                    activeCard.value.cardIndex = 0;
-                    
-                    // 3. Save
-                    persistLayout();
-                    // 4. Log
-                    activeCardMeta.value.activity.unshift({ text: 'Restored card from archive', date: new Date().toISOString() });
-                    persistMeta(card.id, activeCardMeta.value);
-                };
-
-                const addList = () => { boardData.value.lists.push({ id: 'l'+Date.now(), title: 'New List', cards: [] }); persistLayout(); };
-                const deleteList = (i) => { if(confirm('Delete list?')) { boardData.value.lists.splice(i, 1); persistLayout(); } };
-                const addCard = (lIdx) => {
-                    const now = new Date().toISOString();
-                    const c = { 
-                        id: Date.now(), 
-                        title: 'New Card', 
-                        description: '', 
-                        labels: [], 
-                        dueDate: null, 
-                        assignees: [], 
-                        commentCount: 0,
-                        created_at: now
-                    };
-                    
-                    boardData.value.lists[lIdx].cards.push(c);
+                // Methods: Context Menu & Covers
+                contextMenu, 
+                showContextMenu: (e, l, c) => { contextMenu.value = { show: true, x: Math.min(e.clientX, window.innerWidth-200), y: Math.min(e.clientY, window.innerHeight-200), lIdx: l, cIdx: c }; },
+                closeContextMenu: () => contextMenu.value.show = false,
+                deleteCardContext: (l, c) => { 
+                    if(!confirm("Delete?")) return; 
+                    const id = boardData.value.lists[l].cards[c].id; 
+                    boardData.value.lists[l].cards.splice(c, 1); 
                     persistLayout(); 
-                    persistCardDesc(c);
-                    
-                    persistMeta(c.id, { 
-                        created_at: now,
-                        comments: [], 
-                        activity: [{ text: 'Card created', date: now }], 
-                        revisions: [], 
-                        assigned_to: [] 
+                    api('delete_card', { id }); 
+                },
+                archiveCardContext: (l, c) => {
+                    const card = boardData.value.lists[l].cards[c];
+                    if(!confirm(`Archive "${card.title}"?`)) return;
+                    boardData.value.archive.unshift(card);
+                    boardData.value.lists[l].cards.splice(c, 1);
+                    persistLayout();
+                    api('load_card_meta', {id: card.id}).then(m => {
+                        m.activity = m.activity || [];
+                        m.activity.unshift({ text: 'Archived', date: new Date().toISOString() });
+                        persistMeta(card.id, m);
                     });
-                };
-                const filteredBoards = computed(() => {
-                    if (!boardSearch.value) return availableBoards.value;
-                    const q = boardSearch.value.toLowerCase();
-                    return availableBoards.value.filter(b => b.name.toLowerCase().includes(q) || b.id.toLowerCase().includes(q));
-                });
-                const filteredArchive = computed(() => {
-                    if (!boardData.value.archive) return [];
-                    const q = archiveSearch.value.toLowerCase();
-                    return boardData.value.archive.filter(c => 
-                        c.title.toLowerCase().includes(q) || 
-                        (c.description || '').toLowerCase().includes(q)
-                    );
-                });
-                const toggleArchive = () => {
-                    isArchiveOpen.value = !isArchiveOpen.value;
-                    if (isArchiveOpen.value) {
-                        nextTick(() => archiveSearchInput.value?.focus());
-                    }
-                };
-                const openCardModal = async (lIdx, cIdx) => {
-                    const isArchived = lIdx === 'archive';
-                    const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
-                    activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: card };
-                    originalDescription.value = card.description || ''; 
-                    revisionIndex.value = -1;
-                    isSidebarOpen.value = false; isModalOpen.value = true;
-                    activeCardMeta.value = { comments: [], activity: [], revisions: [], assigned_to: [] };
-                    if(card.id) try { 
-                        const m = await api('load_card_meta', {id: card.id});
-                        activeCardMeta.value = { 
-                            comments: m.comments||[], 
-                            activity: m.activity||[],
-                            revisions: m.revisions||[],
-                            assigned_to: m.assigned_to||[],
-                            checklists: m.checklists||[]
-                        };
-                    } catch(e){}
-                };
-                const closeModal = () => { 
-                    // Check if description changed (or if we restored an old version)
-                    if (activeCard.value.data.description !== originalDescription.value) {
-                        
-                        // 1. Create the new revision object locally
-                        const newRev = {
-                            id: Date.now().toString(),
-                            date: new Date().toISOString(),
-                            text: originalDescription.value, // Save the state we are leaving behind
-                            user: currentUser.value.name
-                        };
-                        // 2. Add to local state (Top of list)
-                        activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
-                        activeCardMeta.value.revisions.unshift(newRev);
-                        
-                        // 3. Limit to 50 revisions
-                        if (activeCardMeta.value.revisions.length > 50) {
-                            activeCardMeta.value.revisions = activeCardMeta.value.revisions.slice(0, 50);
-                        }
-
-                        // 4. Add Activity Log
-                        activeCardMeta.value.activity.unshift({ 
-                            text: 'Modified description (Revision saved)', 
-                            date: new Date().toISOString() 
-                        });
-                        // 5. Save everything in ONE request to prevent data loss
-                        persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                    }
-                    
-                    isModalOpen.value = false;
+                },
+                hasCover: (l, c) => l!==null && c!==null && !!boardData.value.lists[l].cards[c].coverImage,
+                openCoverModal: async (l, c) => { 
+                    activeCoverTarget.value = { lIdx: l, cIdx: c }; 
+                    try { availableCovers.value = (await api('list_uploads')).files || []; showCoverModalState.value = true; } catch(e){ alert("Load failed"); } 
+                },
+                setCover: (url) => { 
+                    boardData.value.lists[activeCoverTarget.value.lIdx].cards[activeCoverTarget.value.cIdx].coverImage = url; 
                     persistLayout(); 
-                    persistCardDesc(activeCard.value.data); 
-                };
-                const hasCover = (lIdx, cIdx) => {
-                    if (lIdx === null || cIdx === null) return false;
-                    const card = boardData.value.lists[lIdx].cards[cIdx];
-                    return !!card.coverImage;
-                };
-
-                const openCoverModal = async (lIdx, cIdx) => {
-                    activeCoverTarget.value = { lIdx, cIdx };
-                    // Fetch images from backend
-                    try {
-                        const res = await api('list_uploads');
-                        availableCovers.value = res.files || [];
-                        showCoverModalState.value = true;
-                    } catch (e) {
-                        alert("Could not load images");
-                    }
-                };
-
-                const setCover = (url) => {
-                    const { lIdx, cIdx } = activeCoverTarget.value;
-                    if (lIdx !== null && cIdx !== null) {
-                        boardData.value.lists[lIdx].cards[cIdx].coverImage = url;
-                        persistLayout();
-                    }
-                    showCoverModalState.value = false;
-                };
-
-                const removeCover = (lIdx, cIdx) => {
-                    boardData.value.lists[lIdx].cards[cIdx].coverImage = null;
-                    persistLayout();
-                };
-                const showContextMenu = (e, lIdx, cIdx) => {
-                    // 1. Save target coordinates and indices
-                    contextMenu.value = {
-                        show: true,
-                        x: Math.min(e.clientX, window.innerWidth - 200), // Prevent overflow right
-                        y: Math.min(e.clientY, window.innerHeight - 200), // Prevent overflow bottom
-                        lIdx,
-                        cIdx
-                    };
-                };
-                const closeContextMenu = () => {
-                    contextMenu.value.show = false;
-                };
-
-                // Logic to clone a card
-                const cloneCard = (lIdx, cIdx) => {
-                    const original = boardData.value.lists[lIdx].cards[cIdx];
-                    // Deep copy card data
-                    const newCard = JSON.parse(JSON.stringify(original));
-                    newCard.id = Date.now(); // Generate new ID
-                    newCard.title += ' (Copy)';
-                    // Insert immediately after original
-                    boardData.value.lists[lIdx].cards.splice(cIdx + 1, 0, newCard);
-                    persistLayout();
-                    
-                    // If original had a description, save it to the new ID
-                    if (original.description) {
-                        newCard.description = original.description;
-                        persistCardDesc(newCard);
-                    }
-                    
-                    // Initialize fresh meta for the new card
-                    persistMeta(newCard.id, { 
-                        comments: [], 
-                        activity: [{ text: 'Card duplicated', date: new Date().toISOString() }], 
-                        revisions: [],
-                        assigned_to: []
-                    });
-                };
-
-                // Logic to delete directly from context menu
-                const deleteCardContext = (lIdx, cIdx) => {
-                    if(!confirm("Delete this card?")) return;
-                    const card = boardData.value.lists[lIdx].cards[cIdx];
-                    boardData.value.lists[lIdx].cards.splice(cIdx, 1);
-                    persistLayout();
-                    api('delete_card', { id: card.id });
-                };
-                const deleteActiveCard = () => {
-                    if(!confirm("Delete?")) return;
-                    const { id } = activeCard.value.data;
-
-                    if (activeCard.value.listIndex === 'archive') {
-                        boardData.value.archive.splice(activeCard.value.cardIndex, 1);
-                    } else {
-                        boardData.value.lists[activeCard.value.listIndex].cards.splice(activeCard.value.cardIndex, 1);
-                    }
-
-                    persistLayout();
-                    api('delete_card', { id }); isModalOpen.value = false;
-                };
-
-                const onCardDragOver = (e, l, c) => {
-                    if (!dragSource.value || (dragSource.value.l === l && dragSource.value.c === c)) { dragTarget.value = null; return; }
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    dragTarget.value = { l, c, pos: e.clientY < (rect.top + rect.height/2) ? 'top' : 'bottom' };
-                };
-                const onListDragOver = (e, l) => { if (dragSource.value && !(dragTarget.value?.l === l && dragTarget.value?.c !== null)) dragTarget.value = { l, c: null, pos: 'bottom' }; };
+                    showCoverModalState.value = false; 
+                },
+                removeCover: (l, c) => { 
+                    boardData.value.lists[l].cards[c].coverImage = null; 
+                    persistLayout(); 
+                },
                 
-                const startDrag = (e, l, c) => { dragSource.value = { l, c }; e.dataTransfer.effectAllowed = 'move'; };
-                const onDrop = () => {
-                    if (!dragSource.value || !dragTarget.value) return;
-                    const { l: sL, c: sC } = dragSource.value;
-                    const { l: tL, c: tC, pos } = dragTarget.value;
-                    const card = boardData.value.lists[sL].cards[sC];
-                    boardData.value.lists[sL].cards.splice(sC, 1);
-                    let idx = tC === null ? boardData.value.lists[tL].cards.length : tC;
-                    if (sL === tL && sC < tC) idx--;
-                    if (pos === 'bottom' && tC !== null) idx++;
-                    boardData.value.lists[tL].cards.splice(idx, 0, card);
-                    
-                    if (sL !== tL) {
-                        api('load_card_meta', {id: card.id}).then(m => {
-                            m.activity = m.activity || [];
-                            m.activity.unshift({ text: `Moved to ${boardData.value.lists[tL].title}`, date: new Date().toISOString() });
-                            persistMeta(card.id, m);
-                        });
-                    }
-                    dragSource.value = null;
-                    dragTarget.value = null; persistLayout();
-                };
-
-                const toggleLabel = (c) => { 
+                // Methods: Labels & Dates
+                toggleLabel: (c) => { 
                     const l = activeCard.value.data.labels || []; 
-                    // Check if label exists by color (or string match if legacy)
-                    const existingIdx = l.findIndex(x => (x.color || x) === c);
-                    
-                    if (existingIdx > -1) {
-                        l.splice(existingIdx, 1);
-                    } else {
-                        // Add new label object
-                        l.push({ color: c, name: c.charAt(0).toUpperCase() + c.slice(1) });
-                    }
-                    activeCard.value.data.labels = l;
+                    const idx = l.findIndex(x => (x.color||x) === c); 
+                    if (idx > -1) l.splice(idx, 1); else l.push({ color: c, name: c.charAt(0).toUpperCase() + c.slice(1) }); 
+                    activeCard.value.data.labels = l; 
                     persistLayout(); 
-                };
-                const handleDueDateChange = () => { activeCardMeta.value.activity.unshift({ text: `Due date changed`, date: new Date().toISOString() }); persistMeta(activeCard.value.data.id, activeCardMeta.value); persistLayout(); };
-                const renderMarkdown = (text) => marked.parse(text || '').replace(/disabled=""/g, '');
-                const deleteComment = (commentId) => {
-                    if(!confirm('Delete this comment?')) return;
-                    activeCardMeta.value.comments = activeCardMeta.value.comments.filter(c => c.id !== commentId);
-                    if (activeCard.value.data && activeCard.value.data.commentCount > 0) {
-                        activeCard.value.data.commentCount--;
-                    }
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                };
-                const startEditComment = (c) => { editingCommentId.value = c.id; editCommentText.value = c.text; };
-                const saveEditComment = () => {
-                    const c = activeCardMeta.value.comments.find(c => c.id === editingCommentId.value);
-                    if (c) { c.text = editCommentText.value; c.editedDate = new Date().toISOString(); persistMeta(activeCard.value.data.id, activeCardMeta.value); }
-                    editingCommentId.value = null;
-                };
-                const addComment = () => {
-                    if (!newComment.value.trim()) return;
-                    activeCardMeta.value.comments.unshift({ 
-                        id: Date.now(), 
-                        text: newComment.value, 
-                        date: new Date().toISOString(), 
-                        user_id: currentUser.value.id,
-                        user: { ...currentUser.value } 
-                    });
-                    
-                    if (activeCard.value.data) {
-                        activeCard.value.data.commentCount = (activeCard.value.data.commentCount || 0) + 1;
-                    }
+                },
+                handleStartDateChange: () => { activeCardMeta.value.activity.unshift({ text: `Start date changed`, date: new Date().toISOString() }); persistMeta(activeCard.value.data.id, activeCardMeta.value); persistLayout(); },
+                handleDueDateChange: () => { activeCardMeta.value.activity.unshift({ text: `Due date changed`, date: new Date().toISOString() }); persistMeta(activeCard.value.data.id, activeCardMeta.value); persistLayout(); },
 
-                    newComment.value = ''; 
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                };
-                const createChecklist = () => {
-                    const name = prompt("New Checklist Name:", "Checklist");
-                    if (!name) return;
-                    
-                    activeCardMeta.value.checklists = activeCardMeta.value.checklists || [];
-                    activeCardMeta.value.checklists.push({
-                        id: Date.now().toString(),
-                        name: name,
-                        items: []
-                    });
-                    // Persist changes
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                    updateCardStats();
-                }
-                const deleteChecklist = (clIdx) => {
-                    if (!confirm("Delete this entire checklist?")) return;
-                    activeCardMeta.value.checklists.splice(clIdx, 1);
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                    updateCardStats();
-                }
-                const addChecklistItem = (e, clIdx) => {
-                    const val = e.target.value.trim();
-                    if (!val) return;
-                    
-                    activeCardMeta.value.checklists[clIdx].items.push({
-                        id: Date.now().toString() + Math.random().toString().substr(2, 5),
-                        name: val,
-                        state: 'incomplete',
-                        pos: activeCardMeta.value.checklists[clIdx].items.length + 1
-                    });
-                    
-                    e.target.value = ''; // Clear input
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                    updateCardStats();
-                }
-                const deleteChecklistItem = (clIdx, itemIdx) => {
-                    activeCardMeta.value.checklists[clIdx].items.splice(itemIdx, 1);
-                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
-                    updateCardStats();
-                }
-                // Shared upload function
-                const uploadFile = (file) => {
-                    if (!file) return;
-                    // Optimistic UI: Reset drag state immediately
-                    isDraggingFile.value = false;
-                    const fd = new FormData(); 
-                    fd.append('file', file);
-                    
-                    fetch(`?action=upload&board=${currentBoardId.value}`, {method:'POST', body:fd})
-                        .then(r=>r.json())
-                        .then(res => {
-                            if(res.url) {
-                                const el = document.getElementById('editor-textarea');
-                                const v = activeCard.value.data.description || '';
-                                
-                                // Insert at cursor position (or end if unavailable)
-                                const start = el ? el.selectionStart : v.length;
-                                const end = el ? el.selectionEnd : v.length;
-                                
-                                activeCard.value.data.description = v.slice(0, start) + `\n![Image](${res.url})\n` + v.slice(end);
-                                debouncedSaveCard();
-                            }
-                        });
-                };
-
-                // Handle standard file input selection
-                const handleFileInput = (e) => {
-                    uploadFile(e.target.files[0]);
-                };
-
-                // Handle Drop Zone events
-                const handleImageDrop = (e) => {
-                    isDraggingFile.value = false;
-                    const f = e.dataTransfer.files[0];
-                    if (f && f.type.startsWith('image/')) {
-                        uploadFile(f);
-                    }
-                };
-                const restoreRevision = () => {
-                    if (revisionIndex.value > -1 && confirm("Restore this version?")) {
-                        activeCard.value.data.description = activeCardMeta.value.revisions[revisionIndex.value].text;
-                        revisionIndex.value = -1;
-                        debouncedSaveCard();
-                    }
-                };
-                const compiledMarkdown = computed(() => {
-                    const text = revisionIndex.value > -1 ? activeCardMeta.value.revisions[revisionIndex.value].text : activeCard.value.data.description;
-                    return marked.parse(text || '').replace(/disabled=""/g, '').replace(/disabled/g, '');
-                });
-                const debouncedSaveCard = () => { saveLocal(); syncState.value='saving'; clearTimeout(debounceTimer); debounceTimer = setTimeout(() => { persistCardDesc(activeCard.value.data); syncState.value='synced'; }, 1000); };
-                const handlePreviewClick = (e) => {
+                // Methods: View & Resize
+                toggleView: () => { if(splitPaneRatio.value === 50) splitPaneRatio.value = 100; else if(splitPaneRatio.value === 100) splitPaneRatio.value = 0; else splitPaneRatio.value = 50; },
+                startResize: () => { 
+                    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+                    const stop = () => { document.body.style.cursor = ''; document.body.style.userSelect = ''; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', stop); };
+                    const move = (e) => { 
+                        const r = splitPaneContainer.value.getBoundingClientRect(); 
+                        let nr = ((e.clientX - r.left) / r.width) * 100; 
+                        splitPaneRatio.value = Math.max(0, Math.min(100, nr)); 
+                    };
+                    window.addEventListener('mousemove', move); window.addEventListener('mouseup', stop);
+                },
+                handlePreviewClick: (e) => {
                     if (revisionIndex.value > -1) return;
-                    // Disable checkboxes during preview
                     if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
                         const all = Array.from(document.querySelectorAll('.markdown-body input[type="checkbox"]'));
                         let c = 0; const idx = all.indexOf(e.target);
                         activeCard.value.data.description = activeCard.value.data.description.replace(/^(\s*[-*]\s\[)([ xX])(\])/gm, (m,p,s,sf) => c++ === idx ? p + (s === ' ' ? 'x' : ' ') + sf : m);
                         persistCardDesc(activeCard.value.data);
                     }
-                };
-                const getTaskStats = (card) => {
-                    // Structured Data
-                    if (card.checklistStats) {
-                        return card.checklistStats;
-                    }
-                    
-                    // Fallback to Markdown regex
-                    const t = card.description || '';
-                    return { 
-                        total: (t.match(/- \[[ xX]\]/g)||[]).length, 
-                        done: (t.match(/- \[[xX]\]/g)||[]).length 
+                },
+
+                // Methods: Import (Trello)
+                handleImportFile: (e) => {
+                    const f = e.target.files[0]; if(!f) return;
+                    const r = new FileReader();
+                    r.onload = (evt) => {
+                        try {
+                            const j = JSON.parse(evt.target.result);
+                            const atts = [];
+                            j.cards.forEach(c => (c.attachments||[]).forEach(a => { if(a.url) atts.push({ cardId: c.id, url: a.url, name: a.name, id: a.id }); }));
+                            importMeta.value = { boardName: j.name||'Imported', cardCount: j.cards.length, lists: j.lists, cards: j.cards, checklists: j.checklists||[], actions: j.actions||[], attachments: atts };
+                            importStep.value = 'preview'; showImportModal.value = true;
+                        } catch(err) { alert("Invalid JSON"); }
+                        e.target.value = '';
                     };
-                };
-                const getDueDateColor = (d) => { if (!d) return ''; const diff = dayjs(d).diff(dayjs(), 'day'); return diff < 0 ? 'bg-red-100 text-red-600' : diff <= 2 ? 'bg-yellow-100 text-yellow-600' : 'bg-slate-200 text-slate-500'; };
-                const formatTime = (iso) => dayjs(iso).fromNow();
-                const formatDateShort = (iso) => dayjs(iso).format('MMM D');
+                    r.readAsText(f);
+                },
+                runImportProcess: async () => {
+                    importStep.value = 'importing';
+                    importProgress.value = { current: 0, total: importMeta.value.attachments.length + 1, status: 'Creating Board Structure...' };
+                    let cookies = '';
+                    const m = curlInput.value.match(/(?:-b|--cookie)\s+'([^']+)'/); if(m) cookies = m[1];
 
-                const editorStats = computed(() => {
-                    const text = activeCard.value.data.description || '';
-                    const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
-                    // Estimate 200 words per minute
-                    const readTime = Math.ceil(words / 200);
-                    return { words, readTime };
-                });
-                const startResize = () => {
-                    isResizing.value = true;
-                    document.body.style.cursor = 'col-resize';
-                    document.body.style.userSelect = 'none'; // Prevent text selection while dragging
-                    window.addEventListener('mousemove', handleResize);
-                    window.addEventListener('mouseup', stopResize);
-                };
-
-                const stopResize = () => {
-                    isResizing.value = false;
-                    document.body.style.cursor = '';
-                    document.body.style.userSelect = '';
-                    window.removeEventListener('mousemove', handleResize);
-                    window.removeEventListener('mouseup', stopResize);
-                };
-                const handleResize = (e) => {
-                    if (!splitPaneContainer.value) return;
-                    const rect = splitPaneContainer.value.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
-                    // Calculate percentage
-                    let newRatio = (x / rect.width) * 100;
-                    // Clamp between 0 and 100
-                    if (newRatio < 0) newRatio = 0;
-                    if (newRatio > 100) newRatio = 100;
-                    
-                    splitPaneRatio.value = newRatio;
-                };
-                const toggleView = () => {
-                    // Logic:
-                    // 1. If currently split 50/50 -> Go to Markdown Only (100)
-                    // 2. If currently Markdown Only (100) -> Go to Preview Only (0)
-                    // 3. If currently Preview Only (0) OR any random dragged size -> Restore to Middle (50)
-                    
-                    if (splitPaneRatio.value === 50) {
-                        splitPaneRatio.value = 100;
-                    } else if (splitPaneRatio.value === 100) {
-                        splitPaneRatio.value = 0;
-                    } else {
-                        splitPaneRatio.value = 50;
-                    }
-                };
-
-                // ---- Helpers for Users/Avatars ----
-                const getUser = (id) => boardData.value.users?.[id] || null;
-
-                const getUserAvatar = (id) => {
-                    const u = getUser(id);
-                    if (!u) return null;
-                    if (u.avatarFile) return u.avatarFile; // Local file priority
-                    if (u.avatarHash) return `https://trello-members.s3.amazonaws.com/${u.id}/${u.avatarHash}/170.png`;
-                    return null;
-                };
-
-                const getUserInitials = (id) => {
-                    const u = getUser(id);
-                    if (u && u.initials) return u.initials;
-                    return null;
-                };
-
-                const getUserName = (id) => {
-                    const u = getUser(id);
-                    if (u && u.fullName) return u.fullName;
-                    return null;
-                }
-
-                // --- User Management Logic ---
-                const openUsersModal = () => {
-                    isUsersModalOpen.value = true;
-                    editingUser.value = null;
-                };
-
-                const createNewUser = () => {
-                    editingUser.value = {
-                        id: 'u_' + Date.now(),
-                        fullName: '',
-                        username: '',
-                        initials: '',
-                        avatarFile: null
-                    };
-                };
-
-                const editUser = (user) => {
-                    editingUser.value = JSON.parse(JSON.stringify(user)); // Deep copy
-                };
-
-                const updateInitials = () => {
-                    if (!editingUser.value.fullName) return;
-                    const parts = editingUser.value.fullName.trim().split(' ');
-                    editingUser.value.initials = parts.length > 1 
-                        ? (parts[0][0] + parts[parts.length-1][0]).toUpperCase() 
-                        : editingUser.value.fullName.slice(0,2).toUpperCase();
-                };
-
-                const handleAvatarUpload = async (e) => {
-                    const file = e.target.files[0];
-                    if (!file) return;
-                    
-                    const fd = new FormData();
-                    fd.append('file', file);
-                    
                     try {
-                        const res = await (await fetch(`?action=upload_avatar&board=${currentBoardId.value}`, {method:'POST', body:fd})).json();
-                        if (res.url) {
-                            editingUser.value.avatarFile = res.url;
+                        const blob = new Blob([JSON.stringify({ 
+                            name: importMeta.value.boardName, lists: importMeta.value.lists, cards: importMeta.value.cards, 
+                            checklists: importMeta.value.checklists, actions: importMeta.value.actions, members: importMeta.value.members||[], labelNames: importMeta.value.labelNames||[] 
+                        })], { type: "application/json" });
+                        
+                        const fd = new FormData(); fd.append('file', blob, 'import.json');
+                        const res = await (await fetch(`?action=import_trello`, { method:'POST', body:fd })).json();
+                        if (!res.board) throw new Error("Creation failed");
+                        
+                        importProgress.value.current++;
+                        for (const [i, a] of importMeta.value.attachments.entries()) {
+                            importProgress.value.status = `Downloading attachment ${i+1}/${importMeta.value.attachments.length}...`;
+                            await api('import_attachment', { board: res.board, card: a.cardId, url: a.url, name: a.name, attachmentId: a.id, cookies });
+                            importProgress.value.current++;
                         }
-                    } catch(err) {
-                        alert("Upload failed");
-                    }
-                };
+                        
+                        importStep.value = 'complete'; importProgress.value.status = 'Done!';
+                        await fetchBoards(); currentBoardId.value = res.board; await switchBoard();
+                        setTimeout(() => { showImportModal.value = false; curlInput.value = ''; }, 1500);
+                    } catch (err) { alert("Import Error: " + err.message); showImportModal.value = false; }
+                },
 
-                const saveUserEntry = async () => {
-                    if (!editingUser.value.fullName) return alert("Name required");
-                    
-                    // Update local state
-                    if (!boardData.value.users) boardData.value.users = {};
-                    boardData.value.users[editingUser.value.id] = editingUser.value;
-                    
-                    // Persist
-                    await api('save_users', { users: boardData.value.users });
-                    editingUser.value = null;
-                };
-
-                const loginAs = (user) => {
-                    // Switch identity
-                    currentUser.value = {
-                        name: user.fullName,
-                        initials: user.initials,
-                        color: 'blue', // Default color for managed users
-                        id: user.id // Track the ID
-                    };
-                    saveUser(); // Save to localStorage
-                    isUsersModalOpen.value = false;
-                    alert(`Now logged in as ${user.fullName}`);
-                };
-
-                onMounted(async () => { 
-                    await fetchBoards();
-                    
-                    if (availableBoards.value.length === 0) {
-                        showBoardSelector.value = true;
-                    } else {
-                        if (!currentBoardId.value || !availableBoards.value.find(b => b.id === currentBoardId.value)) {
-                            currentBoardId.value = availableBoards.value[0].id;
-                        }
-                        await switchBoard(); 
-                    }
-
-                    window.addEventListener('click', () => {
-                        if (contextMenu.value.show) closeContextMenu();
-                    });
-
-                    window.addEventListener('keydown', (e) => {
-
-                        if (e.key === 'Escape') {
-                            if (showCreateBoardModal.value) showCreateBoardModal.value = false;
-                            else if (showRenameModal.value) showRenameModal.value = false;
-                            else if (isBoardSwitcherOpen.value) isBoardSwitcherOpen.value = false;
-                            else if (isModalOpen.value) closeModal();
-                            else if (showBoardSelector.value) showBoardSelector.value = false;
-                        }
-
-                        // 1. Ignore if user is typing in an input/textarea
-                        const tag = document.activeElement.tagName;
-                        if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable) return;
-
-                        // 2. Ignore if any modal is open
-                        if (isModalOpen.value || showCreateBoardModal.value || showRenameModal.value || showBoardSelector.value || isUsersModalOpen.value) return;
-
-                        // 3. Handle Shortcuts
-                        if (hoveredCard.value.l !== null && hoveredCard.value.c !== null) {
-                            
-                            // "Enter" to Open
-                            if (e.key === 'Enter') {
-                                e.preventDefault();
-                                openCardModal(hoveredCard.value.l, hoveredCard.value.c);
-                            }
-
-                            // "c" to Archive
-                            if (e.key.toLowerCase() === 'c') {
-                                e.preventDefault();
-                                archiveCardContext(hoveredCard.value.l, hoveredCard.value.c);
-                                // Reset hover state so we don't accidentally archive the next card that slides up
-                                hoveredCard.value = { l: null, c: null }; 
-                            }
-                        }
-                    });
-                });
-
-                return {
-                    // --- Core App State & User ---
-                    version, currentUser, saveUser, darkMode,
-                    isUsersModalOpen, openUsersModal, editingUser, createNewUser, 
-                    editUser, updateInitials, handleAvatarUpload, saveUserEntry, loginAs,
-                    syncState, syncStatusColor: computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value])),
-                    syncMessage: computed(() => syncState.value.toUpperCase()),
-                    handleStartDateChange: () => {
-                        activeCardMeta.value.activity.unshift({ 
-                            text: `Start date changed`, 
-                            date: new Date().toISOString() 
-                        }); 
-                        persistMeta(activeCard.value.data.id, activeCardMeta.value); 
-                        persistLayout(); 
-                    },
-
-                    // --- Board Navigation & CRUD ---
-                    boardData, currentBoardId, availableBoards, selectBoard, switchBoard, handleImportFile,
-                    showBoardSelector, boardSearch, boardSearchInput, filteredBoards, isBoardSwitcherOpen, toggleBoardSwitcher,
-                    showCreateBoardModal, newBoardTitle, createBoard,
-                    showRenameModal, tempBoardTitle, openRenameModal, saveBoardTitle, deleteBoard,
-
-                    // --- Trello Import State ---
-                    showImportModal, importMeta, importStep, importProgress, runImportProcess, curlInput,
-
-                    // --- Lists & Drag-and-Drop ---
-                    addList, deleteList, persistLayout,
-                    dragTarget, startDrag, onDrop, onCardDragOver, onListDragOver,
-
-                    // --- Card Modal & Editor UI ---
-                    isModalOpen, activeCard, activeCardMeta, openCardModal, closeModal, isSidebarOpen,
-                    splitPaneRatio, splitPaneContainer, startResize, toggleView, editorStats,
-                    renderMarkdown, compiledMarkdown, handlePreviewClick,
-                    handleImageDrop, isDraggingFile, handleFileInput,
-                    createChecklist, deleteChecklist, addChecklistItem, deleteChecklistItem,
-
-                    // --- Card Data & Actions ---
-                    addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard, hoveredCard,
-                    labelColors, toggleLabel, handleDueDateChange, toggleCheckItem, updateCardStats,
-                    originalDescription, revisionIndex, restoreRevision,
-                    archiveCardContext, archiveActiveCard, restoreArchivedCard,
-                    showCoverModalState, availableCovers, hasCover, openCoverModal, setCover, removeCover,
-
-                    // --- Context Menu ---
-                    contextMenu, showContextMenu, closeContextMenu, 
-                    cloneCard, deleteCardContext,
-
-                    // --- Activity & Comments ---
-                    isActivityOpen, isActivityMaximized, activityTab, newComment, addComment, deleteComment,
-                    editingCommentId, editCommentText, startEditComment, saveEditComment,
-
-                    // --- Utilities & Formatters ---
-                    getTaskStats, getDueDateColor, formatTime, formatDateShort, hasAttachment,
-                    getUserAvatar, getUserInitials, getUserName,
-
-                    // --- Archive Support ---
-                    toggleArchive, isArchiveOpen, archiveSearch, archiveSearchInput, filteredArchive
-                };
-            }
-        }).mount('#app');
-    </script>
+                // System
+                updateAvailable, latestVersion, 
+                performUpdate: async () => { 
+                    if(!confirm(`Install update ${latestVersion.value}?`)) return;
+                    try { await api('perform_update', { version: latestVersion.value }); alert("Done! Reloading..."); window.location.reload(); } catch(e) { alert("Failed: "+e.message); }
+                }
+            };
+        }
+    }).mount('#app');
+</script>
 </body>
 </html>
