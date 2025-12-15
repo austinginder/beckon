@@ -30,7 +30,6 @@ class App {
         if (isset($_GET['action'])) {
             $this->handleApi($_GET['action']);
         }
-        // Otherwise, let the script continue to render the HTML below
     }
 
     private function handleApi($action) {
@@ -42,7 +41,7 @@ class App {
             
             // Context setup
             $boardId = $_GET['board'] ?? 'main';
-            $boardId = preg_replace('/[^a-z0-9-]/i', '', $boardId);
+            $boardId = preg_replace('/[^a-z0-9-_]/i', '', $boardId); 
             $boardDir = $boardId ? $this->boardsDir . '/' . $boardId : null;
 
             // Route action to method (e.g., 'list_boards' -> 'actionListBoards')
@@ -237,7 +236,12 @@ class App {
 
         foreach ($json['cards'] as $c) {
             $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
-            $createdDate = date('c', hexdec(substr($c['id'], 0, 8)));
+            
+            // --- ID TRANSFORMATION LOGIC ---
+            $timestamp = hexdec(substr($c['id'], 0, 8));
+            $createdDate = date('c', $timestamp);
+            $datePrefix = date('Y-m-d', $timestamp);
+            $newId = "{$datePrefix}_{$c['id']}";
 
             // Cover Image Logic
             $coverImagePath = null;
@@ -368,8 +372,20 @@ class App {
             throw new Exception("HTTP Error: $code");
         }
 
-        // Append to Markdown
         $mdPath = "$boardPath/$cardId.md";
+
+        // If exact ID.md not found, try to resolve the timestamped version (YYYY-MM-DD_ID.md)
+        if (!file_exists($mdPath) && preg_match('/^[a-f0-9]{24}$/', $cardId)) {
+            $timestamp = hexdec(substr($cardId, 0, 8));
+            $datePrefix = date('Y-m-d', $timestamp);
+            $prefixedPath = "$boardPath/{$datePrefix}_{$cardId}.md";
+            
+            if (file_exists($prefixedPath)) {
+                $mdPath = $prefixedPath;
+            }
+        }
+
+        // Append to Markdown
         if (file_exists($mdPath)) {
             $isImg = in_array(strtolower($ext), ['jpg','jpeg','png','gif','webp']);
             $append = "\n\n" . ($isImg ? '!' : '') . "[$rawName](boards/$slug/uploads/$filename)";
