@@ -496,30 +496,74 @@ class App {
         return ['status' => 'saved'];
     }
 
+    protected function actionGetBoardLists($input) {
+        $targetBoardId = $input['board_id'] ?? null;
+        if (!$targetBoardId) throw new Exception("No board ID provided");
+
+        $targetBoardPath = $this->getBoardPath($targetBoardId);
+        if (!file_exists($targetBoardPath)) throw new Exception("Target board not found");
+
+        $layout = json_decode(@file_get_contents("$targetBoardPath/layout.json"), true) ?? ['lists' => []];
+        
+        $lists = array_map(function($list) {
+            return ['id' => $list['id'], 'title' => $list['title']];
+        }, $layout['lists'] ?? []);
+
+        return ['lists' => $lists];
+    }
+
     protected function actionMoveCardToBoard($input, $boardId, $boardDir) {
         $targetId = $input['target_board'];
         $cardId = $input['id'];
+        $targetListId = $input['target_list_id'] ?? null;
         $targetPath = $this->getBoardPath($targetId);
         
         if (!file_exists($targetPath)) throw new Exception("Target board not found");
 
         $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
         $cardData = null;
+        $cardFound = false;
         
         foreach ($sourceLayout['lists'] as &$list) {
             foreach ($list['cards'] as $key => $card) {
                 if ($card['id'] == $cardId) {
                     $cardData = $card;
                     array_splice($list['cards'], $key, 1);
+                    $cardFound = true;
                     break 2;
                 }
             }
         }
+
+        if (!$cardFound && isset($sourceLayout['archive'])) {
+            foreach ($sourceLayout['archive'] as $key => $card) {
+                if ($card['id'] == $cardId) {
+                    $cardData = $card;
+                    array_splice($sourceLayout['archive'], $key, 1);
+                    break;
+                }
+            }
+        }
+
         if (!$cardData) throw new Exception("Card not found");
 
         $targetLayout = json_decode(@file_get_contents("$targetPath/layout.json"), true) ?? [];
         if (empty($targetLayout['lists'])) $targetLayout['lists'] = [['id' => 'l1', 'title' => 'Inbox', 'cards' => []]];
-        array_unshift($targetLayout['lists'][0]['cards'], $cardData);
+        
+        $listFound = false;
+        if ($targetListId) {
+            foreach ($targetLayout['lists'] as &$list) {
+                if ($list['id'] == $targetListId) {
+                    array_unshift($list['cards'], $cardData);
+                    $listFound = true;
+                    break;
+                }
+            }
+        }
+
+        if (!$listFound) {
+            array_unshift($targetLayout['lists'][0]['cards'], $cardData);
+        }
 
         foreach (["$cardId.md", "$cardId.json"] as $f) {
             if (file_exists("$boardDir/$f")) rename("$boardDir/$f", "$targetPath/$f");
@@ -1117,7 +1161,7 @@ class App {
                                 <div v-if="activityTab==='history'" class="space-y-2">
                                     <div v-if="!activeCardMeta.activity.length" class="text-center text-slate-400 text-sm mt-4">No activity.</div>
                                     <div v-for="log in activeCardMeta.activity" :key="log.date" class="text-xs text-slate-600 dark:text-slate-400 flex gap-3 border-b border-slate-50 dark:border-slate-700 pb-1">
-                                        <span class="font-mono text-slate-400 shrink-0 w-24">{{ formatTime(log.date) }}</span>
+                                        <span class="font-mono text-slate-400 shrink-0 w-28">{{ formatTime(log.date) }}</span>
                                         <span>{{ log.text }}</span>
                                     </div>
                                 </div>
@@ -1416,6 +1460,12 @@ class App {
                 Edit Card
             </button>
 
+            <button @click="openMoveModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
+                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
+                <icon name="move" class="w-4 h-4 text-slate-400"></icon>
+                Move Card
+            </button>
+
             <button @click="openCoverModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
                 <icon name="image" class="w-4 h-4 text-slate-400"></icon>
@@ -1448,6 +1498,42 @@ class App {
                 <icon name="trash" class="w-4 h-4 text-red-400"></icon>
                 Delete
             </button>
+        </div>
+
+        <div v-if="showMoveModalState" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[110] p-4 backdrop-blur-sm" @click.self="showMoveModalState = false">
+            <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-md overflow-hidden animate-fade-in-up border border-slate-200 dark:border-slate-700">
+                <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
+                    <h3 class="font-bold text-slate-700 dark:text-slate-200">Move Card</h3>
+                    <button @click="showMoveModalState = false" class="text-slate-400 hover:text-red-500">
+                        <icon name="close" class="w-5 h-5"></icon>
+                    </button>
+                </div>
+                <div class="p-6 space-y-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Destination Board</label>
+                        <select v-model="moveDestination.boardId" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none">
+                            <option v-for="b in availableBoards" :key="b.id" :value="b.id">{{ b.name }}</option>
+                        </select>
+                    </div>
+                    <div v-if="moveDestination.boardId === currentBoardId">
+                        <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Destination List</label>
+                        <select v-model="moveDestination.listId" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none">
+                            <option v-for="l in boardData.lists" :key="l.id" :value="l.id">{{ l.title }}</option>
+                        </select>
+                    </div>
+                    <div v-else-if="destinationBoardLists.length > 0">
+                        <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Destination List</label>
+                        <select v-model="moveDestination.listId" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none">
+                            <option v-for="l in destinationBoardLists" :key="l.id" :value="l.id">{{ l.title }}</option>
+                        </select>
+                    </div>
+                    <div v-else class="text-xs text-slate-500 italic">Card will be moved to the top of the first list on the target board.</div>
+                    <div class="flex justify-end gap-2 mt-4">
+                        <button @click="showMoveModalState = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded transition">Cancel</button>
+                        <button @click="submitMove" class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white font-bold rounded transition shadow-lg shadow-blue-900/50">Move</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div v-if="showCoverModalState" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[110] p-4 backdrop-blur-sm" @click.self="showCoverModalState = false">
@@ -1616,6 +1702,7 @@ class App {
             const showRenameModal = ref(false);
             const showImportModal = ref(false);
             const showCoverModalState = ref(false);
+            const showMoveModalState = ref(false);
             const isArchiveOpen = ref(false);
             
             // --- Reactive State: Inputs & Temporary ---
@@ -1640,6 +1727,9 @@ class App {
             const contextMenu = ref({ show: false, x: 0, y: 0, lIdx: null, cIdx: null });
             const activeCoverTarget = ref({ lIdx: null, cIdx: null });
             const availableCovers = ref([]);
+            const destinationBoardLists = ref([]);
+            const moveContext = ref({ lIdx: null, cIdx: null });
+            const moveDestination = ref({ boardId: '', listId: null });
 
             // --- Reactive State: Active Card Context ---
             const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
@@ -1886,6 +1976,44 @@ class App {
                 } catch (err) { alert("Failed: " + err.message); e.target.value = ""; }
             };
 
+            const openMoveModal = (lIdx, cIdx) => {
+                moveContext.value = { lIdx, cIdx };
+                const sourceList = boardData.value.lists[lIdx];
+                moveDestination.value = { boardId: currentBoardId.value, listId: sourceList.id };
+                destinationBoardLists.value = []; // Clear previous results
+                showMoveModalState.value = true;
+            };
+
+            const submitMove = async () => {
+                const { lIdx, cIdx } = moveContext.value;
+                const card = boardData.value.lists[lIdx].cards[cIdx];
+                const sourceListId = boardData.value.lists[lIdx].id;
+                
+                if (moveDestination.value.boardId === currentBoardId.value) {
+                    const targetListId = moveDestination.value.listId;
+                    if (targetListId !== sourceListId) {
+                        const targetListIdx = boardData.value.lists.findIndex(l => l.id === targetListId);
+                        if (targetListIdx > -1) {
+                            boardData.value.lists[lIdx].cards.splice(cIdx, 1);
+                            boardData.value.lists[targetListIdx].cards.push(card);
+                            persistLayout();
+                            api('load_card_meta', {id: card.id}).then(m => {
+                                m.activity = (m.activity || []); m.activity.unshift({ text: `Moved to ${boardData.value.lists[targetListIdx].title}`, date: new Date().toISOString() }); persistMeta(card.id, m);
+                            });
+                        }
+                    }
+                } else {
+                    await api('move_card_to_board', { 
+                        id: card.id, 
+                        target_board: moveDestination.value.boardId,
+                        target_list_id: moveDestination.value.listId
+                    });
+                    boardData.value.lists[lIdx].cards.splice(cIdx, 1);
+                    persistLayout();
+                }
+                showMoveModalState.value = false;
+            };
+
             const openCardModal = async (lIdx, cIdx) => {
                 const isArchived = lIdx === 'archive';
                 const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
@@ -2071,6 +2199,30 @@ class App {
 
             watch(darkMode, (v) => { document.documentElement.classList.toggle('dark', v); localStorage.setItem('beckon_darkMode', v); }, { immediate: true });
             watch(isActivityOpen, (v) => localStorage.setItem('beckon_activity_open', v));
+            watch(() => moveDestination.value.boardId, async (newBoardId) => {
+                if (newBoardId && newBoardId !== currentBoardId.value) {
+                    try {
+                        const res = await api('get_board_lists', { board_id: newBoardId });
+                        destinationBoardLists.value = res.lists || [];
+                        if (destinationBoardLists.value.length > 0) {
+                            moveDestination.value.listId = destinationBoardLists.value[0].id;
+                        } else {
+                            moveDestination.value.listId = null;
+                        }
+                    } catch (e) {
+                        console.error("Failed to fetch destination lists", e);
+                        destinationBoardLists.value = [];
+                        moveDestination.value.listId = null;
+                    }
+                } else {
+                    destinationBoardLists.value = [];
+                    if (moveContext.value.lIdx !== null && boardData.value.lists[moveContext.value.lIdx]) {
+                        moveDestination.value.listId = boardData.value.lists[moveContext.value.lIdx].id;
+                    } else if (boardData.value.lists.length > 0) {
+                        moveDestination.value.listId = boardData.value.lists[0].id;
+                    }
+                }
+            });
 
             onMounted(async () => { 
                 await fetchBoards();
@@ -2131,18 +2283,18 @@ class App {
                 // UI Controls
                 isModalOpen, isSidebarOpen, isActivityOpen, isActivityMaximized, activityTab,
                 showBoardSelector, isBoardSwitcherOpen, showCreateBoardModal, showRenameModal, 
-                showImportModal, showCoverModalState, isArchiveOpen, isUsersModalOpen,
+                showImportModal, showCoverModalState, showMoveModalState, isArchiveOpen, isUsersModalOpen,
                 
                 // Search & Filters
                 boardSearch, boardSearchInput, filteredBoards, 
                 archiveSearch, archiveSearchInput, filteredArchive,
                 
                 // Card Editor Data
-                activeCard, activeCardMeta, editorStats, compiledMarkdown, originalDescription, revisionIndex,
+                activeCard, activeCardMeta, editorStats, compiledMarkdown, originalDescription, revisionIndex, destinationBoardLists,
                 splitPaneRatio, splitPaneContainer, isDraggingFile,
                 
                 // Forms
-                newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText,
+                newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText, moveDestination,
                 editingUser, curlInput,
                 
                 // Drag & Drop
@@ -2159,7 +2311,7 @@ class App {
                 addList, deleteList, persistLayout,
 
                 // Methods: Cards
-                addCard, deleteActiveCard, openCardModal, closeModal, moveCardToBoard, debouncedSaveCard, 
+                addCard, deleteActiveCard, openCardModal, closeModal, moveCardToBoard, openMoveModal, submitMove, debouncedSaveCard, 
                 cloneCard, 
                 
                 // Methods: Comments/Activity
