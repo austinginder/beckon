@@ -1155,84 +1155,82 @@ class App {
 
         <main class="flex-1 overflow-x-auto overflow-y-hidden p-6 scrolling-wrapper">
             <div class="flex h-full gap-6 items-start">
-                <div v-for="(list, listIndex) in boardData.lists" :key="list.id"
-                    class="w-72 bg-slate-100 dark:bg-slate-800/50 rounded-lg shadow-xl flex flex-col shrink-0 max-h-full border-t-4 border-blue-600 transition-colors"
-                    @dragover.prevent="onListDragOver($event, listIndex)" @drop="onDrop">
+                <div v-for="(list, listIndex) in boardData.lists" 
+                    :key="list.id" 
+                    class="flex items-start h-full"
+                    @dragover.prevent="onListDragOver($event, listIndex)" 
+                    @drop.prevent="onDrop">
                     
-                    <div class="p-3 flex justify-between items-center rounded-t-lg shrink-0">
-                        <input v-model="list.title" @change="persistLayout" class="bg-transparent font-bold text-slate-700 dark:text-slate-200 text-sm focus:outline-none w-full">
-                        <button @click="deleteList(listIndex)" class="text-slate-400 hover:text-red-500 px-1">×</button>
+                    <div v-if="dragSource?.type === 'list' && dragTarget?.index === listIndex && dragSource.index > listIndex" 
+                        class="w-72 h-full bg-blue-600/10 border-2 border-dashed border-blue-600/50 rounded-lg shrink-0 mr-6 animate-pulse">
                     </div>
 
-                    <div class="flex-1 overflow-y-auto p-2 min-h-[50px]">
-                        <div v-for="(card, cardIndex) in list.cards" :key="card.id">
-                            <div v-if="dragTarget?.l === listIndex && dragTarget?.c === cardIndex && dragTarget?.pos === 'top'" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
-                            <div draggable="true" 
-                                @dragstart.stop="startDrag($event, listIndex, cardIndex)"
-                                @contextmenu.prevent="showContextMenu($event, listIndex, cardIndex)" 
-                                @dragover.stop.prevent="onCardDragOver($event, listIndex, cardIndex)"
-                                @click="openCardModal(listIndex, cardIndex)"
-                                @mouseenter="hoveredCard = { l: listIndex, c: cardIndex }"
-                                @mouseleave="hoveredCard = { l: null, c: null }"
-                                :class="{'ring-2 ring-blue-400 ring-offset-1': hoveredCard.l === listIndex && hoveredCard.c === cardIndex}"
-                                class="bg-white dark:bg-slate-700 p-3 rounded shadow-sm border border-slate-200 dark:border-slate-600 hover:shadow-md cursor-pointer transition group relative hover:border-blue-400 mb-2">
+                    <div 
+                        :class="{'opacity-50 grayscale': dragSource?.type === 'list' && dragSource?.index === listIndex}"
+                        class="w-72 bg-slate-100 dark:bg-slate-800/50 rounded-lg shadow-xl flex flex-col shrink-0 max-h-full border-t-4 border-blue-600 transition-all hover:border-blue-500">
+                        
+                        <div 
+                            draggable="true"
+                            @dragstart.stop="startListDrag($event, listIndex)"
+                            @dragend="onDragEnd"
+                            class="p-3 flex justify-between items-center rounded-t-lg shrink-0 cursor-grab active:cursor-grabbing hover:bg-slate-200 dark:hover:bg-slate-700 transition">
+                            <input v-model="list.title" @change="persistLayout" class="bg-transparent font-bold text-slate-700 dark:text-slate-200 text-sm focus:outline-none w-full cursor-text">
+                            <button @click="deleteList(listIndex)" class="text-slate-400 hover:text-red-500 px-1">×</button>
+                        </div>
 
-                                <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap">
-                                    <span v-for="l in card.labels" :key="l.name || l" 
-                                          :class="`bg-${(l.color || l)}-500`" 
-                                          class="h-2 w-8 rounded-full block" 
-                                          :title="l.name || l">
-                                    </span>
-                                </div>
-
-                                <div v-if="card.coverImage" class="mb-2 -mx-3 -mt-3 rounded-t overflow-hidden h-32 relative group/cover">
-                                    <img :src="card.coverImage" class="w-full h-full object-cover">
-                                </div>
+                        <div class="flex-1 overflow-y-auto p-2 min-h-[50px]">
+                            <div v-for="(card, cardIndex) in list.cards" :key="card.id">
+                                <div v-if="dragTarget?.l === listIndex && dragTarget?.c === cardIndex && dragTarget?.pos === 'top'" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
                                 
-                                <div class="text-sm text-slate-800 dark:text-slate-100 mb-2">{{ card.title }}</div>
-                                
-                                <div class="flex items-center justify-between">
-                                    <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
-                                        <span v-if="card.hasDesc"><icon name="text" class="w-3 h-3 inline"></icon></span>
-                                        <span v-if="card.hasAtt" title="Has Attachments">
-                                            <icon name="paperclip" class="w-3 h-3 inline"></icon>
-                                        </span>
-                                        <span v-if="card.commentCount > 0" title="Comments" class="flex items-center gap-0.5">
-                                            <icon name="chat" class="w-3 h-3 inline"></icon> {{ card.commentCount }}
-                                        </span>
-                                        <span v-if="getTaskStats(card).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card).done === getTaskStats(card).total}">
-                                            <icon name="check-circle" class="w-3 h-3 inline"></icon> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
-                                        </span>
-                                        <span v-if="card.startDate || card.dueDate" class="flex items-center gap-1" :class="card.dueDate ? getDueDateColor(card.dueDate) : 'text-slate-400'">
-                                            <icon name="clock" class="w-3 h-3 inline"></icon> 
-                                            
-                                            <span v-if="card.startDate">
-                                                {{ formatDateShort(card.startDate) }} 
-                                                <span v-if="card.dueDate" class="mx-0.5">-</span>
-                                            </span>
+                                <div draggable="true" 
+                                    @dragstart.stop="startDrag($event, listIndex, cardIndex)"
+                                    @contextmenu.prevent="showContextMenu($event, listIndex, cardIndex)" 
+                                    @dragover.stop.prevent="onCardDragOver($event, listIndex, cardIndex)"
+                                    @click="openCardModal(listIndex, cardIndex)"
+                                    @mouseenter="hoveredCard = { l: listIndex, c: cardIndex }"
+                                    @mouseleave="hoveredCard = { l: null, c: null }"
+                                    :class="{'ring-2 ring-blue-400 ring-offset-1': hoveredCard.l === listIndex && hoveredCard.c === cardIndex}"
+                                    class="bg-white dark:bg-slate-700 p-3 rounded shadow-sm border border-slate-200 dark:border-slate-600 hover:shadow-md cursor-pointer transition group relative hover:border-blue-400 mb-2">
 
-                                            <span v-if="card.dueDate">
-                                                {{ formatDateShort(card.dueDate) }}
-                                            </span>
-                                        </span>
+                                    <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap">
+                                        <span v-for="l in card.labels" :key="l.name || l" :class="`bg-${(l.color || l)}-500`" class="h-2 w-8 rounded-full block" :title="l.name || l"></span>
                                     </div>
-                                    
-                                    <div v-if="card.assignees?.length" class="flex -space-x-2 overflow-hidden">
-                                        <div v-for="uid in card.assignees" :key="uid" 
-                                             class="inline-block h-5 w-5 rounded-full ring-2 ring-white dark:ring-slate-700 bg-slate-200 dark:bg-slate-600 flex items-center justify-center text-[8px] font-bold text-slate-600 dark:text-slate-300"
-                                             :title="getUserName(uid)">
-                                            <img v-if="getUserAvatar(uid)" :src="getUserAvatar(uid)" class="h-full w-full rounded-full object-cover">
-                                            <span v-else>{{ getUserInitials(uid) }}</span>
+                                    <div v-if="card.coverImage" class="mb-2 -mx-3 -mt-3 rounded-t overflow-hidden h-32 relative group/cover">
+                                        <img :src="card.coverImage" class="w-full h-full object-cover">
+                                    </div>
+                                    <div class="text-sm text-slate-800 dark:text-slate-100 mb-2">{{ card.title }}</div>
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
+                                            <span v-if="card.hasDesc"><icon name="text" class="w-3 h-3 inline"></icon></span>
+                                            <span v-if="card.hasAtt"><icon name="paperclip" class="w-3 h-3 inline"></icon></span>
+                                            <span v-if="card.commentCount > 0"><icon name="chat" class="w-3 h-3 inline"></icon> {{ card.commentCount }}</span>
+                                            <span v-if="getTaskStats(card).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card).done === getTaskStats(card).total}">
+                                                <icon name="check-circle" class="w-3 h-3 inline"></icon> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
+                                            </span>
+                                            <span v-if="card.startDate || card.dueDate" class="flex items-center gap-1" :class="card.dueDate ? getDueDateColor(card.dueDate) : 'text-slate-400'">
+                                                <icon name="clock" class="w-3 h-3 inline"></icon> 
+                                                <span v-if="card.startDate">{{ formatDateShort(card.startDate) }}<span v-if="card.dueDate" class="mx-0.5">-</span></span>
+                                                <span v-if="card.dueDate">{{ formatDateShort(card.dueDate) }}</span>
+                                            </span>
+                                        </div>
+                                        <div v-if="card.assignees?.length" class="flex -space-x-2 overflow-hidden">
+                                            <div v-for="uid in card.assignees" :key="uid" class="inline-block h-5 w-5 rounded-full ring-2 ring-white dark:ring-slate-700 bg-slate-200 dark:bg-slate-600 flex items-center justify-center text-[8px] font-bold text-slate-600 dark:text-slate-300">
+                                                <img v-if="getUserAvatar(uid)" :src="getUserAvatar(uid)" class="h-full w-full rounded-full object-cover"><span v-else>{{ getUserInitials(uid) }}</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
+                                <div v-if="dragTarget?.l === listIndex && dragTarget?.c === cardIndex && dragTarget?.pos === 'bottom'" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
                             </div>
                             
-                            <div v-if="dragTarget?.l === listIndex && dragTarget?.c === cardIndex && dragTarget?.pos === 'bottom'" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
+                            <div v-if="dragTarget?.l === listIndex && dragTarget?.c === null && dragSource?.type === 'card'" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
                         </div>
-                        <div v-if="dragTarget?.l === listIndex && dragTarget?.c === null" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
+                        <button @click="addCard(listIndex)" class="w-full py-2 text-slate-500 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-700 text-xs font-bold transition rounded-b-lg shrink-0">+ Add Card</button>
                     </div>
-                    <button @click="addCard(listIndex)" class="w-full py-2 text-slate-500 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-700 text-xs font-bold transition rounded-b-lg shrink-0">+ Add Card</button>
+
+                    <div v-if="dragSource?.type === 'list' && dragTarget?.index === listIndex && dragSource.index < listIndex" 
+                        class="w-72 h-full bg-blue-600/10 border-2 border-dashed border-blue-600/50 rounded-lg shrink-0 ml-6 animate-pulse">
+                    </div>
                 </div>
                 <button @click="addList" class="w-72 h-12 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-600 hover:border-slate-500 text-slate-400 font-bold rounded-lg shrink-0 transition flex items-center justify-center">+ Add List</button>
                 <div class="w-4 shrink-0"></div>
@@ -2429,36 +2427,108 @@ class App {
             // 6. DRAG & DROP
             // ====================================================================================
 
-            const startDrag = (e, l, c) => { dragSource.value = { l, c }; e.dataTransfer.effectAllowed = 'move'; };
+            const startDrag = (e, l, c) => { 
+                dragSource.value = { type: 'card', l, c }; 
+                e.dataTransfer.effectAllowed = 'move'; 
+                e.dataTransfer.dropEffect = 'move';
+            };
+
+            const startListDrag = (e, l) => {
+                if (['INPUT', 'BUTTON'].includes(e.target.tagName)) {
+                    e.preventDefault();
+                    return;
+                }
+                dragSource.value = { type: 'list', index: l };
+                e.dataTransfer.effectAllowed = 'move';
+                if (e.currentTarget && e.currentTarget.parentElement) {
+                    e.dataTransfer.setDragImage(e.currentTarget.parentElement, 20, 20);
+                }
+            };
             
             const onCardDragOver = (e, l, c) => {
-                if (!dragSource.value || (dragSource.value.l === l && dragSource.value.c === c)) { dragTarget.value = null; return; }
+                // STRICT CHECK: If we are dragging a LIST, ignore card slots completely
+                if (dragSource.value?.type !== 'card') return;
+
+                if (!dragSource.value || (dragSource.value.l === l && dragSource.value.c === c)) { 
+                    dragTarget.value = null; 
+                    return; 
+                }
                 const rect = e.currentTarget.getBoundingClientRect();
                 dragTarget.value = { l, c, pos: e.clientY < (rect.top + rect.height/2) ? 'top' : 'bottom' };
             };
             
-            const onListDragOver = (e, l) => { if (dragSource.value && !(dragTarget.value?.l === l && dragTarget.value?.c !== null)) dragTarget.value = { l, c: null, pos: 'bottom' }; };
+            const onListDragOver = (e, l) => { 
+                // Case 1: Dragging a LIST
+                if (dragSource.value?.type === 'list') {
+                    if (dragSource.value.index !== l) {
+                        e.preventDefault(); // Allow drop
+                        dragTarget.value = { type: 'list', index: l };
+                    }
+                    return;
+                }
+
+                // Case 2: Dragging a CARD (over the list container)
+                if (dragSource.value?.type === 'card') {
+                    e.preventDefault(); // Allow drop
+                    // If hovering over empty space in list, target the bottom of that list
+                    if (!(dragTarget.value?.l === l && dragTarget.value?.c !== null)) { 
+                        dragTarget.value = { l, c: null, pos: 'bottom' }; 
+                    } 
+                }
+            };
             
             const onDrop = () => {
                 if (!dragSource.value || !dragTarget.value) return;
-                const { l: sL, c: sC } = dragSource.value;
-                const { l: tL, c: tC, pos } = dragTarget.value;
-                const card = boardData.value.lists[sL].cards[sC];
-                
-                boardData.value.lists[sL].cards.splice(sC, 1);
-                let idx = tC === null ? boardData.value.lists[tL].cards.length : tC;
-                if (sL === tL && sC < tC) idx--;
-                if (pos === 'bottom' && tC !== null) idx++;
-                boardData.value.lists[tL].cards.splice(idx, 0, card);
-                
-                if (sL !== tL) {
-                    api('load_card_meta', {id: card.id}).then(m => {
-                        m.activity = m.activity || [];
-                        m.activity.unshift({ text: `Moved to ${boardData.value.lists[tL].title}`, date: new Date().toISOString() });
-                        persistMeta(card.id, m);
-                    });
+
+                // SCENARIO 1: REORDER LISTS
+                if (dragSource.value.type === 'list' && dragTarget.value.type === 'list') {
+                    const fromIdx = dragSource.value.index;
+                    const toIdx = dragTarget.value.index;
+                    
+                    if (fromIdx !== toIdx) {
+                        const listToMove = boardData.value.lists[fromIdx];
+                        boardData.value.lists.splice(fromIdx, 1);
+                        boardData.value.lists.splice(toIdx, 0, listToMove);
+                        persistLayout();
+                    }
                 }
-                dragSource.value = null; dragTarget.value = null; persistLayout();
+                // SCENARIO 2: MOVE CARD
+                else if (dragSource.value.type === 'card') {
+                    // Safety: Ensure we aren't dropping a card onto a list sort target
+                    if (dragTarget.value.type === 'list') return; 
+
+                    const { l: sL, c: sC } = dragSource.value;
+                    const { l: tL, c: tC, pos } = dragTarget.value;
+                    
+                    if (typeof sL === 'undefined' || typeof tL === 'undefined') return;
+
+                    const card = boardData.value.lists[sL].cards[sC];
+                    
+                    boardData.value.lists[sL].cards.splice(sC, 1);
+                    
+                    let idx = tC === null ? boardData.value.lists[tL].cards.length : tC;
+                    if (sL === tL && sC < tC) idx--;
+                    if (pos === 'bottom' && tC !== null) idx++;
+                    
+                    boardData.value.lists[tL].cards.splice(idx, 0, card);
+                    
+                    if (sL !== tL) {
+                        api('load_card_meta', {id: card.id}).then(m => {
+                            m.activity = m.activity || [];
+                            m.activity.unshift({ text: `Moved to ${boardData.value.lists[tL].title}`, date: new Date().toISOString() });
+                            persistMeta(card.id, m);
+                        });
+                    }
+                }
+                
+                dragSource.value = null; 
+                dragTarget.value = null; 
+                persistLayout();
+            };
+
+            const onDragEnd = () => {
+                dragSource.value = null;
+                dragTarget.value = null;
             };
 
 
@@ -2619,7 +2689,7 @@ class App {
                 editingUser, curlInput,
                 
                 // Drag & Drop
-                dragTarget, startDrag, onDrop, onCardDragOver, onListDragOver, hoveredCard,
+                dragTarget, dragSource, startDrag, startListDrag, onDrop, onDragEnd, onCardDragOver, onListDragOver, hoveredCard,
 
                 // Trello Import
                 importMeta, importStep, importProgress,
