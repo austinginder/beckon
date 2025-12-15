@@ -1725,7 +1725,7 @@ class App {
             
             // --- Reactive State: UI & Modals ---
             const isModalOpen = ref(false);           // Card Edit Modal
-            const isSidebarOpen = ref(false);         // Card Edit Sidebar
+            const isSidebarOpen = ref(localStorage.getItem('beckon_sidebar_open') === 'true');
             const isActivityOpen = ref(localStorage.getItem('beckon_activity_open') !== 'false');
             const isActivityMaximized = ref(false);
             const isUsersModalOpen = ref(false);
@@ -2051,9 +2051,8 @@ class App {
                 const isArchived = lIdx === 'archive';
                 const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
                 activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: card };
-                originalDescription.value = card.description || ''; 
+                originalDescription.value = card.description || '';
                 revisionIndex.value = -1;
-                isSidebarOpen.value = false; 
                 isModalOpen.value = true;
                 activeCardMeta.value = { comments: [], activity: [], revisions: [], assigned_to: [], checklists: [] };
                 
@@ -2231,6 +2230,7 @@ class App {
 
             watch(darkMode, (v) => { document.documentElement.classList.toggle('dark', v); localStorage.setItem('beckon_darkMode', v); }, { immediate: true });
             watch(isActivityOpen, (v) => localStorage.setItem('beckon_activity_open', v));
+            watch(isSidebarOpen, (v) => localStorage.setItem('beckon_sidebar_open', v));
             watch(() => moveDestination.value.boardId, async (newBoardId) => {
                 if (newBoardId && newBoardId !== currentBoardId.value) {
                     try {
