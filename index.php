@@ -912,10 +912,13 @@ class App {
     <script src="https://cdn.tailwindcss.com"></script>
     <script>tailwind.config = { darkMode: 'class' }</script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it-emoji@3.0.0/dist/markdown-it-emoji.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/relativeTime.js"></script>
     <script>dayjs.extend(window.dayjs_plugin_relativeTime)</script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tributejs@5.1.3/dist/tribute.css" />
+    <script src="https://cdn.jsdelivr.net/npm/tributejs@5.1.3/dist/tribute.min.js"></script>
     <style>
         .scrolling-wrapper::-webkit-scrollbar { height: 10px; }
         .scrolling-wrapper::-webkit-scrollbar-track { background: #1e293b; }
@@ -943,6 +946,55 @@ class App {
         .markdown-body input[type="checkbox"] { margin-right: 8px; cursor: pointer; }
         .animate-fade-in { animation: fadeIn 0.2s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+        /* Tribute.js Customization */
+        .tribute-container {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            border-radius: 0.5rem;
+            overflow: hidden;
+            z-index: 9999;
+            font-family: inherit;
+            /* Force Light Mode Defaults */
+            background-color: white !important; 
+            color: #334155 !important; /* Slate-700 */
+            border: 1px solid #e2e8f0;
+        }
+
+        /* Force Dark Mode Overrides */
+        .dark .tribute-container { 
+            background-color: #1e293b !important; /* Slate-800 */
+            border-color: #334155 !important;     /* Slate-700 */
+            color: #e2e8f0 !important;            /* Slate-200 */
+        }
+        .dark .tribute-container ul {
+            background-color: #1e293b !important; /* Slate-800 */
+        }
+
+        .tribute-container ul { margin: 0; padding: 0; list-style: none; max-height: 200px; overflow-y: auto; }
+        
+        .tribute-container li { 
+            padding: 8px 12px; 
+            cursor: pointer; 
+            font-size: 14px; 
+            display: flex; 
+            align-items: center; 
+            border-bottom: 1px solid transparent; 
+        }
+        
+        /* Light Mode Hover/Selected */
+        .tribute-container li:hover, 
+        .tribute-container li.highlight { 
+            background-color: #eff6ff !important; /* Blue-50 */
+            color: #2563eb !important;            /* Blue-600 */
+        }
+        
+        /* Dark Mode Hover/Selected */
+        .dark .tribute-container li:hover, 
+        .dark .tribute-container li.highlight { 
+            background-color: #3b82f6 !important; /* Blue-500 */
+            color: white !important;              /* White Text */
+        }
+        
+        .tribute-container li span { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; margin-right: 0.5rem; }
     </style>
     <link rel="icon" href="beckon-icon.webp">
 </head>
@@ -1709,10 +1761,6 @@ class App {
             class="fixed z-[100] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 w-48 py-1 overflow-hidden animate-fade-in"
             :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
             @click.stop>
-            
-            <div class="px-3 py-2 border-b border-slate-100 dark:border-slate-700 mb-1">
-                <div class="text-xs font-bold text-slate-500 truncate">Actions</div>
-            </div>
 
             <button @click="openCardModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
@@ -1936,9 +1984,25 @@ class App {
     createApp({
         setup() {
             // --- Configuration & Constants ---
-            marked.setOptions({ gfm: true, breaks: true });
+            const md = window.markdownit({
+                html: true,        // Enable HTML tags in source
+                breaks: true,      // Convert '\n' in paragraphs to <br>
+                linkify: true      // Autoconvert URL-like text to links
+            }).use(window.markdownitEmoji);
+            const emojiData = ref([]);
+            fetch('https://raw.githubusercontent.com/github/gemoji/master/db/emoji.json')
+                .then(r => r.json())
+                .then(data => {
+                    // Transform GitHub's data into a flat array for Tribute
+                    emojiData.value = data.map(e => ({
+                        key: e.aliases[0], // The text to search (e.g. "thumbsup")
+                        value: e.aliases[0], // The text to insert (e.g. "thumbsup")
+                        emoji: e.emoji       // The actual character (👍) to show in the menu
+                    }));
+                });
             const labelColors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink', 'slate'];
             const version = '<?php echo BECKON_VERSION; ?>';
+            let tributeInstance = null;
 
             // --- Utils ---
             const generateId = () => {
@@ -1981,7 +2045,7 @@ class App {
             const showCoverModalState = ref(false);
             const showMoveModalState = ref(false);
             const isArchiveOpen = ref(false);
-            
+
             // --- Reactive State: Inputs & Temporary ---
             const boardSearch = ref('');
             const archiveSearch = ref('');
@@ -2102,8 +2166,10 @@ class App {
             });
 
             const compiledMarkdown = computed(() => {
-                const text = revisionIndex.value > -1 ? activeCardMeta.value.revisions[revisionIndex.value].text : activeCard.value.data.description;
-                return marked.parse(text || '').replace(/disabled=""/g, '').replace(/disabled/g, '');
+                // Determine which text to show (revision vs current)
+                let text = revisionIndex.value > -1  ? activeCardMeta.value.revisions[revisionIndex.value].text  : activeCard.value.data.description;
+                // Render using markdown-it (handles emojis automatically)
+                return md.render(text || '').replace(/disabled=""/g, '');
             });
 
             const editorStats = computed(() => {
@@ -2614,6 +2680,23 @@ class App {
                     }
                 }
             });
+            watch(isModalOpen, (isOpen) => {
+                if (isOpen) {
+                    // nextTick waits for Vue to actually render the <textarea> in the DOM
+                    nextTick(() => {
+                        const editor = document.getElementById('editor-textarea');
+                        if (editor && tributeInstance) {
+                            tributeInstance.attach(editor);
+                            
+                            // Re-add the event listener every time the modal opens
+                            editor.addEventListener('tribute-replaced', (e) => {
+                                activeCard.value.data.description = e.target.value;
+                                debouncedSaveCard(); 
+                            });
+                        }
+                    });
+                }
+            });
 
             onMounted(async () => { 
                 await fetchBoards();
@@ -2660,6 +2743,30 @@ class App {
                         }
                     }
                 });
+                tributeInstance = new Tribute({
+                    trigger: ':',
+                    values: (text, cb) => {
+                        cb(emojiData.value.filter(e => e.key.startsWith(text)));
+                    },
+                    menuItemTemplate: (item) => `<span class="mr-2 text-lg">${item.original.emoji}</span> ${item.original.key}`,
+                    selectTemplate: (item) => `:${item.original.value}:`,
+                    lookup: 'key',
+                    fillAttr: 'value',
+                    allowSpaces: false
+                });
+
+                const editor = document.getElementById('editor-textarea');
+                if (editor) {
+                    tribute.attach(editor);
+                    
+                    // CRITICAL: Vue doesn't know Tribute changed the text. 
+                    // We must manually trigger an update so v-model stays in sync.
+                    editor.addEventListener('tribute-replaced', (e) => {
+                        activeCard.value.data.description = e.target.value;
+                        // Trigger the autosave logic
+                        debouncedSaveCard(); 
+                    });
+                }
             });
 
 
@@ -2760,7 +2867,7 @@ class App {
                     // Priority 3: Fallback (Empty)
                     return { total: 0, done: 0 };
                 },
-                renderMarkdown: (t) => marked.parse(t || '').replace(/disabled=""/g, ''),
+                renderMarkdown: (t) => md.render(t || '').replace(/disabled=""/g, ''),
                 
                 // Methods: Uploads
                 handleFileInput: (e) => uploadFile(e.target.files[0]),
