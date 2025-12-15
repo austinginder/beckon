@@ -1696,6 +1696,23 @@ class App {
             const labelColors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink', 'slate'];
             const version = '<?php echo BECKON_VERSION; ?>';
 
+            // --- Utils ---
+            const generateId = () => {
+                // 1. Generate the random UUID part
+                let uuid;
+                if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                    uuid = crypto.randomUUID();
+                } else {
+                    uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                        return v.toString(16);
+                    });
+                }
+                // 2. Prepend Date (YYYY-MM-DD_)
+                const datePrefix = dayjs().format('YYYY-MM-DD');
+                return `${datePrefix}_${uuid}`;
+            };
+
             // --- Reactive State: Core ---
             const currentUser = ref(JSON.parse(localStorage.getItem('beckon_user')) || { name: 'Guest', initials: 'G', color: 'slate' });
             const darkMode = ref(localStorage.getItem('beckon_darkMode') === 'true');
@@ -1942,12 +1959,12 @@ class App {
             // 4. CARD ACTIONS
             // ====================================================================================
 
-            const addList = () => { boardData.value.lists.push({ id: 'l'+Date.now(), title: 'New List', cards: [] }); persistLayout(); };
+            const addList = () => { boardData.value.lists.push({ id: generateId(), title: 'New List', cards: [] }); persistLayout(); };
             const deleteList = (i) => { if(confirm('Delete list?')) { boardData.value.lists.splice(i, 1); persistLayout(); } };
             
             const addCard = (lIdx) => {
                 const now = new Date().toISOString();
-                const c = { id: Date.now(), title: 'New Card', description: '', labels: [], dueDate: null, assignees: [], commentCount: 0, created_at: now };
+                const c = { id: generateId(), title: 'New Card', description: '', labels: [], dueDate: null, assignees: [], commentCount: 0, created_at: now };
                 boardData.value.lists[lIdx].cards.push(c);
                 persistLayout(); 
                 persistCardDesc(c);
@@ -1967,7 +1984,7 @@ class App {
             const cloneCard = (lIdx, cIdx) => {
                 const original = boardData.value.lists[lIdx].cards[cIdx];
                 const newCard = JSON.parse(JSON.stringify(original));
-                newCard.id = Date.now();
+                newCard.id = generateId();
                 newCard.title += ' (Copy)';
                 boardData.value.lists[lIdx].cards.splice(cIdx + 1, 0, newCard);
                 persistLayout();
@@ -2055,10 +2072,9 @@ class App {
                 debounceTimer = setTimeout(() => { persistCardDesc(activeCard.value.data); syncState.value='synced'; }, 1000); 
             };
 
-            const closeModal = () => { 
-                // Revision Logic
+            const closeModal = () => {
                 if (activeCard.value.data.description !== originalDescription.value) {
-                    const newRev = { id: Date.now().toString(), date: new Date().toISOString(), text: originalDescription.value, user: currentUser.value.name };
+                    const newRev = { id: generateId(), date: new Date().toISOString(), text: originalDescription.value, user: currentUser.value.name };
                     activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
                     activeCardMeta.value.revisions.unshift(newRev);
                     if (activeCardMeta.value.revisions.length > 50) activeCardMeta.value.revisions = activeCardMeta.value.revisions.slice(0, 50);
@@ -2079,7 +2095,7 @@ class App {
                 const name = prompt("New Checklist Name:", "Checklist");
                 if (!name) return;
                 activeCardMeta.value.checklists = activeCardMeta.value.checklists || [];
-                activeCardMeta.value.checklists.push({ id: Date.now().toString(), name: name, items: [] });
+                activeCardMeta.value.checklists.push({ id: generateId(), name: name, items: [] });
                 persistMeta(activeCard.value.data.id, activeCardMeta.value);
                 updateCardStats();
             };
@@ -2096,7 +2112,7 @@ class App {
             const addComment = () => {
                 if (!newComment.value.trim()) return;
                 activeCardMeta.value.comments.unshift({ 
-                    id: Date.now(), text: newComment.value, date: new Date().toISOString(), 
+                    id: generateId(), text: newComment.value, date: new Date().toISOString(), 
                     user_id: currentUser.value.id, user: { ...currentUser.value } 
                 });
                 activeCard.value.data.commentCount = (activeCard.value.data.commentCount || 0) + 1;
@@ -2352,7 +2368,7 @@ class App {
                 },
 
                 // Methods: Users
-                saveUser, createNewUser: () => { editingUser.value = { id: 'u_'+Date.now(), fullName: '', username: '', initials: '', avatarFile: null }; },
+                saveUser, createNewUser: () => { editingUser.value = { id: generateId(), fullName: '', username: '', initials: '', avatarFile: null }; },
                 editUser: (u) => editingUser.value = JSON.parse(JSON.stringify(u)),
                 saveUserEntry,
                 updateInitials: () => { 
