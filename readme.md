@@ -49,3 +49,37 @@ git clone https://github.com/austinginder/beckon.git .
 ```
 
 Then open https://beckon.localhost in your browser.
+
+Here is a section you can add to your `README.md`. It highlights the architectural differences and feature gaps, using the provided Trello export and source code to verify specific limitations (like the handling of `customFields` and the local-only nature of the user system).
+
+## ⚠️ Beckon vs. Trello: Feature Parity & Limitations
+
+Beckon is designed as a **local-first, markdown-centric** Kanban tool. It is not a 1:1 clone of Trello's cloud SaaS architecture. While it preserves the "spirit" of your boards, there are fundamental differences in how it handles users, data, and interactivity.
+
+### 1. Local-First vs. Cloud SaaS
+Beckon is a self-hosted, single-file PHP application. It does not rely on a central database or cloud infrastructure.
+* **No Real-Time Collaboration:** Unlike Trello, updates do not push to other open clients in real-time (no WebSockets).
+* **No Email/Notifications:** Beckon does not send transactional emails, push notifications, or reminders for due dates.
+* **No API Integrations:** Trello Power-Ups (GitHub, Google Drive, Slack, etc.) are not supported.
+
+### 2. User Authentication & Security
+Beckon **does not have an authentication system**.
+* **Single-User / Local Mode:** The application assumes it is running in a trusted local environment or behind your own server-level authentication (e.g., Basic Auth).
+* **"Ghost" Accounts:** When importing from Trello, Beckon preserves member data (avatars, names) for historical accuracy in comments and activity logs. You can "Login As" these users via the UI to make edits under their persona, but there are no passwords, sessions, or permissions enforcing access control.
+
+### 3. Trello Data Import Limitations
+While the importer is robust, specific Trello-native features are not converted:
+* **Reactions (Emoji):** Trello's JSON exports do not include emoji reaction data for comments. While Beckon supports adding reactions, your historical Trello reactions cannot be imported.
+* **Custom Fields:** Trello `customFields` and `pluginData` are not currently parsed or displayed in the Beckon UI.
+* **Stickers & Voting:** Visual stickers and card voting data are discarded during import.
+* **Archived Data:** While archived cards are imported, granular "closed" list states or complex board permissions are simplified to fit Beckon's flat structure.
+* **Automation:** Trello "Butler" rules and automation scripts are not executable in Beckon.
+
+### 4. Markdown vs. Rich Text
+Trello uses a specific flavor of Markdown mixed with proprietary rich text features. Beckon treats descriptions as **pure GitHub Flavored Markdown (GFM)**.
+* **Formatting:** Some Trello-specific formatting might render slightly differently.
+* **Checklists:** Beckon supports two types of checklists:
+    1.  **UI Checklists:** Native, database-driven checklists (imported from Trello checklists).
+    2.  **Markdown Tasks:** Standard `- [ ]` syntax inside the description (fully supported and interactive).
+
+Use Beckon if you want full ownership of your data in flat files (`.md` and `.json`) and a fast, offline-capable interface. Stick with Trello if you need team management, extensive integrations, or enterprise-grade permissions.
