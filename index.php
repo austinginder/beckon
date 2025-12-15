@@ -957,12 +957,14 @@ if (isset($_GET['action'])) {
                     <div class="flex-1 overflow-y-auto p-2 min-h-[50px]">
                         <div v-for="(card, cardIndex) in list.cards" :key="card.id">
                             <div v-if="dragTarget?.l === listIndex && dragTarget?.c === cardIndex && dragTarget?.pos === 'top'" class="h-1 bg-blue-600/50 rounded my-1 animate-pulse"></div>
-                            
                             <div draggable="true" 
                                 @dragstart.stop="startDrag($event, listIndex, cardIndex)"
                                 @contextmenu.prevent="showContextMenu($event, listIndex, cardIndex)" 
                                 @dragover.stop.prevent="onCardDragOver($event, listIndex, cardIndex)"
                                 @click="openCardModal(listIndex, cardIndex)"
+                                @mouseenter="hoveredCard = { l: listIndex, c: cardIndex }"
+                                @mouseleave="hoveredCard = { l: null, c: null }"
+                                :class="{'ring-2 ring-blue-400 ring-offset-1': hoveredCard.l === listIndex && hoveredCard.c === cardIndex}"
                                 class="bg-white dark:bg-slate-700 p-3 rounded shadow-sm border border-slate-200 dark:border-slate-600 hover:shadow-md cursor-pointer transition group relative hover:border-blue-400 mb-2">
 
                                 <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap">
@@ -1693,11 +1695,12 @@ if (isset($_GET['action'])) {
                 const revisionIndex = ref(-1); 
                 const isUsersModalOpen = ref(false);
                 const editingUser = ref(null);
-                let debounceTimer = null;
                 const showCoverModalState = ref(false);
                 const availableCovers = ref([]);
                 const activeCoverTarget = ref({ lIdx: null, cIdx: null });
                 const isDraggingFile = ref(false);
+                const hoveredCard = ref({ l: null, c: null });
+                let debounceTimer = null;
 
                 watch(darkMode, (v) => {
                     document.documentElement.classList.toggle('dark', v);
@@ -2585,12 +2588,38 @@ if (isset($_GET['action'])) {
                     });
 
                     window.addEventListener('keydown', (e) => {
+
                         if (e.key === 'Escape') {
                             if (showCreateBoardModal.value) showCreateBoardModal.value = false;
                             else if (showRenameModal.value) showRenameModal.value = false;
                             else if (isBoardSwitcherOpen.value) isBoardSwitcherOpen.value = false;
                             else if (isModalOpen.value) closeModal();
                             else if (showBoardSelector.value) showBoardSelector.value = false;
+                        }
+
+                        // 1. Ignore if user is typing in an input/textarea
+                        const tag = document.activeElement.tagName;
+                        if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement.isContentEditable) return;
+
+                        // 2. Ignore if any modal is open
+                        if (isModalOpen.value || showCreateBoardModal.value || showRenameModal.value || showBoardSelector.value || isUsersModalOpen.value) return;
+
+                        // 3. Handle Shortcuts
+                        if (hoveredCard.value.l !== null && hoveredCard.value.c !== null) {
+                            
+                            // "Enter" to Open
+                            if (e.key === 'Enter') {
+                                e.preventDefault();
+                                openCardModal(hoveredCard.value.l, hoveredCard.value.c);
+                            }
+
+                            // "c" to Archive
+                            if (e.key.toLowerCase() === 'c') {
+                                e.preventDefault();
+                                archiveCardContext(hoveredCard.value.l, hoveredCard.value.c);
+                                // Reset hover state so we don't accidentally archive the next card that slides up
+                                hoveredCard.value = { l: null, c: null }; 
+                            }
                         }
                     });
                 });
@@ -2632,7 +2661,7 @@ if (isset($_GET['action'])) {
                     createChecklist, deleteChecklist, addChecklistItem, deleteChecklistItem,
 
                     // --- Card Data & Actions ---
-                    addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard,
+                    addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard, hoveredCard,
                     labelColors, toggleLabel, handleDueDateChange, toggleCheckItem, updateCardStats,
                     originalDescription, revisionIndex, restoreRevision,
                     archiveCardContext, archiveActiveCard, restoreArchivedCard,
