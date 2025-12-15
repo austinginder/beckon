@@ -654,10 +654,10 @@ class App {
                             <h1 class="text-lg font-bold text-white whitespace-nowrap overflow-hidden text-ellipsis max-w-[400px]" title="Switch Board">
                                 {{ boardData.title }}
                             </h1>
-                            <svg class="w-4 h-4 text-slate-500 group-hover:text-white transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            <icon name="chevron-down" class="w-4 h-4 text-slate-500 group-hover:text-white transition" /></icon>
                         </button>
                         <button @click="openRenameModal" class="text-slate-500 hover:text-white p-1 rounded hover:bg-slate-800 transition" title="Rename Board">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                            <icon name="pencil" class="w-4 h-4" /></icon>
                         </button>
                     </div>
 
@@ -683,7 +683,7 @@ class App {
                             </div>
                             <div class="border-t border-slate-100 dark:border-slate-700 mt-1 pt-1">
                                 <div @click="showCreateBoardModal = true; isBoardSwitcherOpen = false" class="px-4 py-2 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer text-sm text-blue-600 dark:text-blue-400 font-medium flex items-center gap-2">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                    <icon name="plus" class="w-4 h-4"></icon>
                                     Create new board...
                                 </div>
                             </div>
@@ -699,13 +699,13 @@ class App {
             
             <div class="flex gap-2 items-center">
                 <label class="cursor-pointer text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg> Import
+                    <icon name="cloud" class="w-3 h-3"></icon> Import
                     <input type="file" @change="handleImportFile" class="hidden" accept=".json">
                 </label>
 
                 <div class="relative z-40">
                     <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                        <icon name="archive" class="w-3 h-3"></icon>
                         Archive
                         <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ boardData.archive.length }}</span>
                     </button>
@@ -735,7 +735,7 @@ class App {
                 </div>
 
                 <button @click="openUsersModal" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                    <icon name="users" class="w-3 h-3"></icon>
                     Users
                     <span v-if="Object.keys(boardData.users || {}).length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ Object.keys(boardData.users || {}).length }}</span>
                 </button>
@@ -744,14 +744,14 @@ class App {
                     <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col h-[70vh]">
                         <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
                             <h3 class="font-bold text-slate-700 dark:text-slate-200">User Management</h3>
-                            <button @click="isUsersModalOpen = false" class="text-slate-400 hover:text-red-500"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                            <button @click="isUsersModalOpen = false" class="text-slate-400 hover:text-red-500"><icon name="close" class="w-5 h-5"></icon></button>
                         </div>
                         
                         <div class="flex-1 flex overflow-hidden">
                             <div class="flex-1 overflow-y-auto p-4 border-r dark:border-slate-700" v-if="!editingUser">
                                 <div class="grid grid-cols-1 gap-2">
                                     <div @click="createNewUser" class="p-3 border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center justify-center gap-2 text-slate-500 transition">
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg> Create New User
+                                        <icon name="plus" class="w-5 h-5"></icon> Create New User
                                     </div>
                                     
                                     <div v-for="u in boardData.users" :key="u.id" class="p-3 bg-slate-50 dark:bg-slate-700 rounded-lg border border-slate-200 dark:border-slate-600 flex justify-between items-center group">
@@ -817,8 +817,8 @@ class App {
                 </div>
 
                 <button @click="darkMode = !darkMode" class="text-slate-400 hover:text-white transition p-1.5 rounded hover:bg-slate-800 ml-auto">
-                    <svg v-if="darkMode" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                    <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+                    <icon v-if="darkMode" name="sun" class="w-4 h-4"></icon>
+                    <icon v-else name="moon" class="w-4 h-4"></icon>
                 </button>
                 <div class="relative group mr-2">
                     <button class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition border-2 border-slate-700 hover:border-blue-500"
@@ -887,18 +887,18 @@ class App {
                                 
                                 <div class="flex items-center justify-between">
                                     <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
-                                        <span v-if="card.description"><svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg></span>
+                                        <span v-if="card.description"><icon name="text" class="w-3 h-3 inline"></icon></span>
                                         <span v-if="hasAttachment(card.description)" title="Has Attachments">
-                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                                            <icon name="paperclip" class="w-3 h-3 inline"></icon>
                                         </span>
                                         <span v-if="card.commentCount > 0" title="Comments" class="flex items-center gap-0.5">
-                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg> {{ card.commentCount }}
+                                            <icon name="chat" class="w-3 h-3 inline"></icon> {{ card.commentCount }}
                                         </span>
                                         <span v-if="getTaskStats(card).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card).done === getTaskStats(card).total}">
-                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
+                                            <icon name="check-circle" class="w-3 h-3 inline"></icon> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
                                         </span>
                                         <span v-if="card.startDate || card.dueDate" class="flex items-center gap-1" :class="card.dueDate ? getDueDateColor(card.dueDate) : 'text-slate-400'">
-                                            <svg class="w-3 h-3 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> 
+                                            <icon name="clock" class="w-3 h-3 inline"></icon> 
                                             
                                             <span v-if="card.startDate">
                                                 {{ formatDateShort(card.startDate) }} 
@@ -942,7 +942,7 @@ class App {
                         <div v-if="activeCard.listIndex === 'archive'" class="mt-2 flex items-center gap-3">
                             <span class="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-1 rounded">ARCHIVED</span>
                             <button @click="restoreArchivedCard" class="text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold px-3 py-1 rounded border border-amber-200 transition flex items-center gap-1">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+                                <icon name="undo" class="w-3 h-3"></icon>
                                 Restore to Board
                             </button>
                         </div>
@@ -953,9 +953,9 @@ class App {
                         
                         <div class="relative group">
                             <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
-                                <svg v-if="splitPaneRatio === 100" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                                <svg v-else-if="splitPaneRatio === 0" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                <svg v-else class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                <icon v-if="splitPaneRatio === 100" name="pencil" class="h-6 w-6"></icon>
+                                <icon v-else-if="splitPaneRatio === 0" name="eye" class="h-6 w-6"></icon>
+                                <icon v-else name="code" class="h-6 w-6"></icon>
                             </button>
                             <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
                                 {{ splitPaneRatio === 100 ? 'Switch to Preview' : (splitPaneRatio === 0 ? 'Switch to Split' : 'Switch to Editor') }}
@@ -965,7 +965,7 @@ class App {
 
                         <div class="relative group">
                             <button @click="isSidebarOpen = !isSidebarOpen" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
-                                <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m-2 10V9a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                                <icon name="sidebar" class="h-6 w-6"></icon>
                             </button>
                             <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
                                 {{ isSidebarOpen ? 'Close Sidebar' : 'Open Sidebar' }}
@@ -974,7 +974,7 @@ class App {
                         </div>
 
                         <button @click="closeModal" class="text-slate-400 hover:text-red-500 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700" title="Close (Esc)">
-                            <svg class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                            <icon name="close" class="h-8 w-8"></icon>
                         </button>
                     </div>
                 </div>
@@ -996,7 +996,7 @@ class App {
                                         </span>
                                     </div>
                                     <label class="cursor-pointer hover:text-blue-600 flex items-center gap-1">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg> Img <input type="file" @change="handleFileInput" class="hidden" accept="image/*">
+                                        <icon name="image" class="w-4 h-4"></icon> Img <input type="file" @change="handleFileInput" class="hidden" accept="image/*">
                                     </label>
                                 </div>
                                 <textarea 
@@ -1052,13 +1052,13 @@ class App {
                                             @click.stop="isActivityMaximized = !isActivityMaximized"
                                             class="text-slate-400 hover:text-blue-500 p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700"
                                             :title="isActivityMaximized ? 'Minimize' : 'Maximize'">
-                                        <svg v-if="!isActivityMaximized" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 11l7-7 7 7M5 19l7-7 7 7"></path></svg>
-                                        <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 13l-7 7-7-7M19 5l-7 7-7-7"></path></svg>
+                                        <icon v-if="!isActivityMaximized" name="minimize" class="w-4 h-4"></icon>
+                                        <icon v-else name="maximize" class="w-4 h-4"></icon>
                                     </button>
 
                                     <button class="text-slate-400 hover:text-blue-500 transition-transform duration-300" 
                                             :class="{'rotate-180': !isActivityOpen}">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                        <icon name="chevron-down" class="w-4 h-4"></icon>
                                     </button>
                                 </div>
                             </div>
@@ -1294,11 +1294,11 @@ class App {
                                 </select>
 
                                 <button @click="archiveActiveCard" class="w-full text-left px-3 py-2 text-sm bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded transition text-slate-700 dark:text-slate-200 font-medium flex items-center gap-2">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                                    <icon name="archive" class="w-4 h-4"></icon>
                                     Archive Card
                                 </button>
                                 <button @click="deleteActiveCard" class="w-full text-left px-3 py-2 text-sm bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 rounded transition text-red-600 dark:text-red-400 font-medium flex items-center gap-2">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                    <icon name="trash" class="w-4 h-4"></icon>
                                     Delete Card
                                 </button>
                             </div>
@@ -1310,7 +1310,7 @@ class App {
         <div v-if="showBoardSelector" class="fixed inset-0 bg-slate-900 z-[60] flex flex-col animate-fade-in">
             <div class="p-6 flex justify-end">
                 <button @click="showBoardSelector = false" class="text-slate-400 hover:text-white transition">
-                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    <icon name="close" class="w-8 h-8"></icon>
                 </button>
             </div>
             <div class="flex-1 overflow-y-auto p-8">
@@ -1320,7 +1320,7 @@ class App {
                     
                     <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                         <div @click="showCreateBoardModal = true; showBoardSelector=false" class="aspect-video border-2 border-dashed border-slate-700 hover:border-yellow-400 hover:bg-slate-800 rounded-xl flex flex-col items-center justify-center cursor-pointer transition group text-slate-500 hover:text-blue-400">
-                            <svg class="w-12 h-12 mb-2 opacity-50 group-hover:scale-110 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            <icon name="plus" class="w-12 h-12 mb-2 opacity-50 group-hover:scale-110 transition"></icon>
                             <span class="font-bold">Create New Board</span>
                         </div>
 
@@ -1345,7 +1345,7 @@ class App {
                 </a>
                 <span v-if="updateAvailable" class="text-slate-700">|</span>
                 <button v-if="updateAvailable" @click="performUpdate" class="flex items-center gap-2 group relative bg-amber-500/10 hover:bg-amber-500/20 px-2 py-1 rounded transition text-amber-500 animate-pulse">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                    <icon name="cloud" class="w-4 h-4"></icon>
                     <span class="text-xs font-bold tracking-widest uppercase font-mono">Update Available: {{ latestVersion }}</span>
                 </button>
             </div>
@@ -1355,7 +1355,7 @@ class App {
                 <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
                     <h3 class="font-bold text-slate-700 dark:text-slate-200">Create New Board</h3>
                     <button @click="showCreateBoardModal = false" class="text-slate-400 hover:text-red-500">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        <icon name="close" class="w-5 h-5"></icon>
                     </button>
                 </div>
                 <div class="p-6">
@@ -1374,7 +1374,7 @@ class App {
                 <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
                     <h3 class="font-bold text-slate-700 dark:text-slate-200">Board Settings</h3>
                     <button @click="showRenameModal = false" class="text-slate-400 hover:text-red-500">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        <icon name="close" class="w-5 h-5"></icon>
                     </button>
                 </div>
                 <div class="p-6 space-y-6">
@@ -1390,7 +1390,7 @@ class App {
 
                     <div>
                         <h4 class="text-xs font-bold text-red-500 uppercase mb-2 flex items-center gap-2">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            <icon name="warning" class="w-4 h-4"></icon>
                             Danger Zone
                         </h4>
                         <p class="text-xs text-slate-500 mb-3">Permanently delete this board and all its cards. This action cannot be undone.</p>
@@ -1412,32 +1412,32 @@ class App {
 
             <button @click="openCardModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                <icon name="pencil" class="w-4 h-4 text-slate-400"></icon>
                 Edit Card
             </button>
 
             <button @click="openCoverModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                <icon name="image" class="w-4 h-4 text-slate-400"></icon>
                 Change Cover
             </button>
 
             <button v-if="hasCover(contextMenu.lIdx, contextMenu.cIdx)" 
                     @click="removeCover(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                <icon name="close" class="w-4 h-4 text-slate-400"></icon>
                 Remove Cover
             </button>
 
             <button @click="cloneCard(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                <icon name="duplicate" class="w-4 h-4 text-slate-400"></icon>
                 Duplicate
             </button>
 
             <button @click="archiveCardContext(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"></path></svg>
+                <icon name="archive" class="w-4 h-4 text-slate-400"></icon>
                 Archive
             </button>
 
@@ -1445,7 +1445,7 @@ class App {
 
             <button @click="deleteCardContext(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2">
-                <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                <icon name="trash" class="w-4 h-4 text-red-400"></icon>
                 Delete
             </button>
         </div>
@@ -1455,7 +1455,7 @@ class App {
                 <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
                     <h3 class="font-bold text-slate-700 dark:text-slate-200">Select Cover Image</h3>
                     <button @click="showCoverModalState = false" class="text-slate-400 hover:text-red-500">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        <icon name="close" class="w-5 h-5"></icon>
                     </button>
                 </div>
                 <div class="flex-1 overflow-y-auto p-4 bg-slate-100 dark:bg-slate-900/50">
@@ -1527,7 +1527,7 @@ class App {
                     </div>
 
                     <div v-if="importStep === 'complete'" class="text-center py-8">
-                        <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <icon name="check" class="w-16 h-16 text-green-500 mx-auto mb-4"></icon>
                         <div class="text-lg font-bold text-white">Import Complete!</div>
                     </div>
 
@@ -1537,6 +1537,55 @@ class App {
     </div>
 <script>
     const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
+
+    const iconPaths = {
+        // UI Basics
+        'close': 'M6 18L18 6M6 6l12 12',
+        'chevron-down': 'M19 9l-7 7-7-7',
+        'plus': 'M12 4v16m8-8H4',
+        'check': 'M5 13l4 4L19 7',
+        'trash': 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16',
+        'pencil': 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z',
+        'warning': 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
+        
+        // Actions
+        'cloud': 'M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12',
+        'archive': 'M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4',
+        'duplicate': 'M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z',
+        'move': 'M14 5l7 7m0 0l-7 7m7-7H3',
+        'undo': 'M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6',
+        
+        // Content Types
+        'users': 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z',
+        'text': 'M4 6h16M4 12h16M4 18h7',
+        'paperclip': 'M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13',
+        'chat': 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
+        'check-circle': 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+        'clock': 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+        'image': 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z',
+        
+        // Interface State
+        'sun': 'M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z',
+        'moon': 'M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z',
+        'sidebar': 'M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m-2 10V9a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
+        'eye': 'M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z',
+        'code': 'M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+        'minimize': 'M5 11l7-7 7 7M5 19l7-7 7 7',
+        'maximize': 'M19 13l-7 7-7-7M19 5l-7 7-7-7'
+    };
+
+    const Icon = (props) => Vue.h('svg', {
+        class: props.class || 'w-4 h-4',
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor'
+        }, [Vue.h('path', {
+            'stroke-linecap': 'round',
+            'stroke-linejoin': 'round',
+            'stroke-width': '2',
+            d: iconPaths[props.name] || ''
+        })]
+    );
 
     createApp({
         setup() {
@@ -2330,7 +2379,9 @@ class App {
                 }
             };
         }
-    }).mount('#app');
+    })
+    .component('icon', Icon)
+    .mount('#app');
 </script>
 </body>
 </html>
