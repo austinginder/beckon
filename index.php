@@ -1306,17 +1306,25 @@ if (isset($_GET['action'])) {
                                 </div>
                             </div>
 
-                            <div v-if="activeCardMeta.checklists?.length" class="pt-4 border-t border-slate-200 dark:border-slate-700 mt-2">
-                                <h3 class="text-xs font-bold text-slate-500 uppercase mb-3 flex justify-between items-center">
-                                    Checklists
-                                    <span class="text-[10px] bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded text-slate-600 dark:text-slate-300">
-                                        {{ Math.round((activeCard.data.checklistStats?.done || 0) / (activeCard.data.checklistStats?.total || 1) * 100) }}%
-                                    </span>
-                                </h3>
+                            <div class="pt-4 border-t border-slate-200 dark:border-slate-700 mt-2">
+                                <div class="flex justify-between items-center mb-3">
+                                    <h3 class="text-xs font-bold text-slate-500 uppercase flex justify-between items-center gap-2">
+                                        Checklists
+                                        <span v-if="activeCard.data.checklistStats" class="text-[10px] bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded text-slate-600 dark:text-slate-300">
+                                            {{ Math.round((activeCard.data.checklistStats?.done || 0) / (activeCard.data.checklistStats?.total || 1) * 100) }}%
+                                        </span>
+                                    </h3>
+                                    <button @click="createChecklist" class="text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 hover:text-blue-600 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-600 px-2 py-0.5 rounded transition font-bold">
+                                        + New
+                                    </button>
+                                </div>
                                 
-                                <div v-for="(cl, clIdx) in activeCardMeta.checklists" :key="cl.id" class="mb-5">
+                                <div v-for="(cl, clIdx) in activeCardMeta.checklists" :key="cl.id" class="mb-6 group/list">
                                     <div class="flex justify-between items-end mb-1">
-                                        <div class="text-xs font-bold text-slate-700 dark:text-slate-200 truncate pr-2" :title="cl.name">{{ cl.name }}</div>
+                                        <div class="flex items-center gap-2 overflow-hidden">
+                                            <div class="text-xs font-bold text-slate-700 dark:text-slate-200 truncate" :title="cl.name">{{ cl.name }}</div>
+                                            <button @click="deleteChecklist(clIdx)" class="text-slate-400 hover:text-red-500 opacity-0 group-hover/list:opacity-100 transition px-1" title="Delete Checklist">×</button>
+                                        </div>
                                         <div class="text-[10px] text-slate-400 font-mono shrink-0">
                                             {{ cl.items.filter(i => i.state === 'complete').length }}/{{ cl.items.length }}
                                         </div>
@@ -1324,25 +1332,39 @@ if (isset($_GET['action'])) {
                                     
                                     <div class="h-1 bg-slate-200 dark:bg-slate-600 rounded-full overflow-hidden mb-2">
                                         <div class="h-full bg-blue-500 transition-all duration-300" 
-                                             :style="{ width: (cl.items.length ? (cl.items.filter(i => i.state === 'complete').length / cl.items.length * 100) : 0) + '%' }">
+                                            :style="{ width: (cl.items.length ? (cl.items.filter(i => i.state === 'complete').length / cl.items.length * 100) : 0) + '%' }">
                                         </div>
                                     </div>
                                     
                                     <div class="space-y-1">
                                         <div v-for="(item, itemIdx) in cl.items" :key="item.id" 
-                                             @click="toggleCheckItem(clIdx, itemIdx)"
-                                             class="flex items-start gap-2 text-xs group cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded -mx-1.5 transition-colors select-none">
+                                            class="flex items-start gap-2 text-xs group/item cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded -mx-1.5 transition-colors select-none">
                                             
-                                            <div class="mt-0.5 w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors shrink-0"
-                                                 :class="item.state === 'complete' ? 'bg-blue-500 border-blue-500 text-white' : 'border-slate-300 dark:border-slate-500 bg-white dark:bg-slate-900 group-hover:border-blue-400'">
+                                            <div @click="toggleCheckItem(clIdx, itemIdx)" 
+                                                class="mt-0.5 w-3.5 h-3.5 border rounded flex items-center justify-center transition-colors shrink-0"
+                                                :class="item.state === 'complete' ? 'bg-blue-500 border-blue-500 text-white' : 'border-slate-300 dark:border-slate-500 bg-white dark:bg-slate-900 group-hover/item:border-blue-400'">
                                                 <svg v-if="item.state === 'complete'" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M5 13l4 4L19 7"></path></svg>
                                             </div>
                                             
-                                            <span class="flex-1 transition-opacity leading-snug break-words" 
-                                                  :class="{'line-through text-slate-400 dark:text-slate-500': item.state === 'complete', 'text-slate-700 dark:text-slate-300': item.state !== 'complete'}">
+                                            <span @click="toggleCheckItem(clIdx, itemIdx)" 
+                                                class="flex-1 transition-opacity leading-snug break-words" 
+                                                :class="{'line-through text-slate-400 dark:text-slate-500': item.state === 'complete', 'text-slate-700 dark:text-slate-300': item.state !== 'complete'}">
                                                 {{ item.name }}
                                             </span>
+                                            
+                                            <button @click.stop="deleteChecklistItem(clIdx, itemIdx)" class="opacity-0 group-hover/item:opacity-100 text-slate-400 hover:text-red-500 transition">
+                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                            </button>
                                         </div>
+                                    </div>
+
+                                    <div class="mt-2 pl-6">
+                                        <input 
+                                            type="text" 
+                                            placeholder="Add item..." 
+                                            class="w-full text-xs bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-500 dark:hover:border-slate-600 dark:text-slate-300 px-0 py-1 outline-none transition-colors placeholder-slate-400"
+                                            @keyup.enter="addChecklistItem($event, clIdx)"
+                                        >
                                     </div>
                                 </div>
                             </div>
@@ -1675,6 +1697,7 @@ if (isset($_GET['action'])) {
                 const showCoverModalState = ref(false);
                 const availableCovers = ref([]);
                 const activeCoverTarget = ref({ lIdx: null, cIdx: null });
+                const isDraggingFile = ref(false);
 
                 watch(darkMode, (v) => {
                     document.documentElement.classList.toggle('dark', v);
@@ -2286,8 +2309,46 @@ if (isset($_GET['action'])) {
                     newComment.value = ''; 
                     persistMeta(activeCard.value.data.id, activeCardMeta.value);
                 };
-                const isDraggingFile = ref(false);
-
+                const createChecklist = () => {
+                    const name = prompt("New Checklist Name:", "Checklist");
+                    if (!name) return;
+                    
+                    activeCardMeta.value.checklists = activeCardMeta.value.checklists || [];
+                    activeCardMeta.value.checklists.push({
+                        id: Date.now().toString(),
+                        name: name,
+                        items: []
+                    });
+                    // Persist changes
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                    updateCardStats();
+                }
+                const deleteChecklist = (clIdx) => {
+                    if (!confirm("Delete this entire checklist?")) return;
+                    activeCardMeta.value.checklists.splice(clIdx, 1);
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                    updateCardStats();
+                }
+                const addChecklistItem = (e, clIdx) => {
+                    const val = e.target.value.trim();
+                    if (!val) return;
+                    
+                    activeCardMeta.value.checklists[clIdx].items.push({
+                        id: Date.now().toString() + Math.random().toString().substr(2, 5),
+                        name: val,
+                        state: 'incomplete',
+                        pos: activeCardMeta.value.checklists[clIdx].items.length + 1
+                    });
+                    
+                    e.target.value = ''; // Clear input
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                    updateCardStats();
+                }
+                const deleteChecklistItem = (clIdx, itemIdx) => {
+                    activeCardMeta.value.checklists[clIdx].items.splice(itemIdx, 1);
+                    persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                    updateCardStats();
+                }
                 // Shared upload function
                 const uploadFile = (file) => {
                     if (!file) return;
@@ -2568,6 +2629,7 @@ if (isset($_GET['action'])) {
                     splitPaneRatio, splitPaneContainer, startResize, toggleView, editorStats,
                     renderMarkdown, compiledMarkdown, handlePreviewClick,
                     handleImageDrop, isDraggingFile, handleFileInput,
+                    createChecklist, deleteChecklist, addChecklistItem, deleteChecklistItem,
 
                     // --- Card Data & Actions ---
                     addCard, deleteActiveCard, moveCardToBoard, debouncedSaveCard,
