@@ -171,7 +171,7 @@ class App {
             $listMap[$l['id']] = count($lists) - 1;
         }
 
-        // 4. Checklists & Actions (Preparation)
+        // 4. Checklists & Actions
         $checklists = [];
         foreach ($json['checklists'] ?? [] as $cl) $checklists[$cl['idCard']][] = $cl;
 
@@ -180,7 +180,7 @@ class App {
             if (!isset($act['data']['card']['id'])) continue;
             $cid = $act['data']['card']['id'];
 
-            // Import missing users found in comments
+            // Import missing users
             if (isset($act['memberCreator']['id']) && !isset($usersMap[$act['memberCreator']['id']])) {
                 $m = $act['memberCreator'];
                 $usersMap[$m['id']] = [
@@ -193,16 +193,22 @@ class App {
 
             if (!isset($cardMeta[$cid])) $cardMeta[$cid] = ['comments' => [], 'activity' => [], 'revisions' => []];
 
-            // Parse specific action types
             $actor = $act['memberCreator']['fullName'] ?? 'Someone';
             $date = $act['date'];
 
             if ($act['type'] === 'commentCard') {
+                // Trello JSON exports do not include reaction data, so we initialize as empty.
+                $mappedReactions = [];
+
                 $cardMeta[$cid]['comments'][] = [
-                    'id' => $act['id'], 'text' => $act['data']['text'], 'date' => $date,
+                    'id' => $act['id'], 
+                    'text' => $act['data']['text'], 
+                    'date' => $date,
                     'user_id' => $act['memberCreator']['id'] ?? null,
-                    'user' => ['name' => $actor, 'initials' => $act['memberCreator']['initials'] ?? '?']
+                    'user' => ['name' => $actor, 'initials' => $act['memberCreator']['initials'] ?? '?'],
+                    'reactions' => $mappedReactions // Add to comment structure
                 ];
+
             } elseif ($act['type'] === 'createCard') {
                 $cardMeta[$cid]['activity'][] = ['text' => "Created by $actor", 'date' => $date];
             } elseif ($act['type'] === 'updateCard') {
@@ -218,7 +224,7 @@ class App {
             }
         }
 
-        // 5. Attachments Map
+        // 5. Attachments
         $attachmentMap = [];
         foreach ($json['cards'] as $cTemp) {
             if (isset($cTemp['attachments'])) {
@@ -566,6 +572,63 @@ class App {
         
         $this->atomicWrite("$boardDir/{$input['id']}.json", $meta);
         return ['status' => 'saved'];
+    }
+
+    protected function actionToggleReaction($input, $boardId, $boardDir) {
+        $cardId = $input['card_id'] ?? null;
+        $commentId = $input['comment_id'] ?? null;
+        $emoji = $input['emoji'] ?? null;
+        $userId = $input['user_id'] ?? null;
+
+        if (!$cardId || !$commentId || !$emoji || !$userId) throw new Exception("Missing parameters");
+
+        // Load meta
+        $metaPath = "$boardDir/$cardId.json";
+        $meta = json_decode(@file_get_contents($metaPath), true) ?? [];
+        $meta['comments'] = $meta['comments'] ?? [];
+
+        $found = false;
+        foreach ($meta['comments'] as &$comment) {
+            if ($comment['id'] === $commentId) {
+                $comment['reactions'] = $comment['reactions'] ?? [];
+                
+                $reactionFound = false;
+                foreach ($comment['reactions'] as $key => &$reaction) {
+                    if ($reaction['emoji'] === $emoji) {
+                        $reactionFound = true;
+                        // Toggle User
+                        $userIndex = array_search($userId, $reaction['users']);
+                        if ($userIndex !== false) {
+                            // Remove user
+                            array_splice($reaction['users'], $userIndex, 1);
+                            // If empty, remove reaction entirely
+                            if (count($reaction['users']) === 0) {
+                                array_splice($comment['reactions'], $key, 1);
+                            }
+                        } else {
+                            // Add user
+                            $reaction['users'][] = $userId;
+                        }
+                        break;
+                    }
+                }
+
+                if (!$reactionFound) {
+                    // Create new reaction
+                    $comment['reactions'][] = ['emoji' => $emoji, 'users' => [$userId]];
+                }
+                
+                $found = true;
+                break;
+            }
+        }
+
+        if ($found) {
+            $this->atomicWrite($metaPath, $meta);
+            return ['status' => 'saved', 'comments' => $meta['comments']];
+        }
+        
+        throw new Exception("Comment not found");
     }
 
     protected function actionGetBoardLists($input) {
@@ -1405,7 +1468,7 @@ class App {
                             <div v-show="isActivityOpen" class="flex-1 overflow-y-auto p-4 space-y-4">
                                 
                                 <div v-if="activityTab==='comments'" class="flex flex-col h-full">
-                                    <div class="flex-1 space-y-4 overflow-y-auto mb-4">
+                                    <div class="flex-1 space-y-4 overflow-y-auto mb-4 p-1">
                                         <div v-if="!activeCardMeta.comments.length" class="text-center text-slate-400 text-sm mt-4">No comments.</div>
                                         <div v-for="c in activeCardMeta.comments" :key="c.id" class="flex gap-3 text-sm group/comment">
                                             
@@ -1417,31 +1480,60 @@ class App {
                                                 {{ getUserInitials(c.user_id) || c.user?.initials || 'U' }}
                                             </div>
                                             
-                                            <div class="flex-1 bg-slate-50 dark:bg-slate-700 p-3 rounded-lg border border-slate-100 dark:border-slate-600 dark:text-slate-200 relative">
-                                                <div class="flex justify-between items-baseline mb-2">
-                                                    <div class="flex items-center gap-2">
-                                                        <span class="font-bold text-xs text-slate-700 dark:text-slate-300">
-                                                            {{ getUserName(c.user_id) || c.user?.name || 'Unknown' }}
-                                                        </span>
-                                                        <span class="text-[10px] text-slate-400 font-mono uppercase">{{ formatTime(c.date) }} <span v-if="c.editedDate" title="Edited">*</span></span>
+                                            <div class="flex-1 min-w-0">
+                                                <div class="bg-slate-50 dark:bg-slate-700 p-3 rounded-lg border border-slate-100 dark:border-slate-600 dark:text-slate-200 relative mb-1">
+                                                    <div class="flex justify-between items-baseline mb-2">
+                                                        <div class="flex items-center gap-2">
+                                                            <span class="font-bold text-xs text-slate-700 dark:text-slate-300">
+                                                                {{ getUserName(c.user_id) || c.user?.name || 'Unknown' }}
+                                                            </span>
+                                                            <span class="text-[10px] text-slate-400 font-mono uppercase">{{ formatTime(c.date) }} <span v-if="c.editedDate" title="Edited">*</span></span>
+                                                        </div>
+                                                        
+                                                        <div class="flex items-center gap-2">
+                                                            <button @click="openReactionPicker(c.id)" class="opacity-0 group-hover/comment:opacity-100 transition-opacity text-slate-400 hover:text-amber-500" title="Add Reaction">
+                                                                <icon name="smile" class="w-4 h-4"></icon>
+                                                            </button>
+
+                                                            <div v-if="editingCommentId !== c.id" class="opacity-0 group-hover/comment:opacity-100 transition-opacity flex gap-2">
+                                                                <button @click="startEditComment(c)" class="text-xs text-slate-400 hover:text-blue-500">Edit</button>
+                                                                <button @click="deleteComment(c.id)" class="text-xs text-slate-400 hover:text-red-500">Delete</button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div v-if="editingCommentId !== c.id" 
+                                                        class="markdown-body !text-sm !bg-transparent !p-0 [&>p]:mb-0 [&>*:last-child]:mb-0" 
+                                                        v-html="renderMarkdown(c.text)">
+                                                    </div>
+
+                                                    <div v-else>
+                                                        <textarea v-model="editCommentText" class="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-2" rows="3"></textarea>
+                                                        <div class="flex justify-end gap-2">
+                                                            <button @click="editingCommentId = null" class="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+                                                            <button @click="saveEditComment" class="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-500">Save</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="flex flex-wrap gap-1.5 items-center">
+                                                    <div v-for="r in c.reactions" :key="r.emoji" 
+                                                         @click="toggleReaction(c.id, r.emoji)"
+                                                         class="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs cursor-pointer border transition select-none"
+                                                         :class="r.users.includes(currentUser.id) ? 'bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300' : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-600'"
+                                                         :title="getReactionTooltip(r)">
+                                                        <span v-html="renderInlineMarkdown(r.emoji)"></span>
+                                                        <span class="font-bold text-[10px]">{{ r.users.length }}</span>
                                                     </div>
                                                     
-                                                    <div v-if="editingCommentId !== c.id" class="opacity-0 group-hover/comment:opacity-100 transition-opacity flex gap-2">
-                                                        <button @click="startEditComment(c)" class="text-xs text-slate-400 hover:text-blue-500">Edit</button>
-                                                        <button @click="deleteComment(c.id)" class="text-xs text-slate-400 hover:text-red-500">Delete</button>
-                                                    </div>
-                                                </div>
-
-                                                <div v-if="editingCommentId !== c.id" 
-                                                    class="markdown-body !text-sm !bg-transparent !p-0 [&>p]:mb-0 [&>*:last-child]:mb-0" 
-                                                    v-html="renderMarkdown(c.text)">
-                                                </div>
-
-                                                <div v-else>
-                                                    <textarea v-model="editCommentText" class="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-2" rows="3"></textarea>
-                                                    <div class="flex justify-end gap-2">
-                                                        <button @click="editingCommentId = null" class="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
-                                                        <button @click="saveEditComment" class="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-500">Save</button>
+                                                    <div v-if="reactingToCommentId === c.id" class="relative">
+                                                        <input 
+                                                            :id="'reaction-input-' + c.id"
+                                                            type="text" 
+                                                            placeholder="Search..."
+                                                            class="w-32 bg-white dark:bg-slate-800 dark:text-slate-100 border border-blue-500 rounded px-2 py-1 text-xs focus:outline-none shadow-lg placeholder:text-slate-400"
+                                                            @blur="closeReactionPicker" 
+                                                        >
                                                     </div>
                                                 </div>
                                             </div>
@@ -1528,7 +1620,7 @@ class App {
                                             <img v-if="getUserAvatar(uid)" :src="getUserAvatar(uid)" class="w-full h-full object-cover">
                                             <span v-else>{{ getUserInitials(uid) }}</span>
                                         </div>
-                                        <span class="text-xs font-bold">{{ getUserName(uid) }}</span>
+                                        <span class="text-xs font-bold text-slate-700 dark:text-slate-200">{{ getUserName(uid) }}</span>
                                         <button @click="activeCard.data.assignees = activeCard.data.assignees.filter(id => id !== uid); persistLayout()" class="text-slate-400 hover:text-red-500">×</button>
                                     </div>
                                     <button @click="!activeCard.data.assignees.includes(currentUser.id) && (activeCard.data.assignees.push(currentUser.id), persistLayout())" 
@@ -1944,6 +2036,7 @@ class App {
         // Interface State
         'sun': 'M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z',
         'moon': 'M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z',
+        'smile': 'M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
         'sidebar': 'M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m-2 10V9a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
         'eye': 'M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z',
         'code': 'M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
@@ -1986,6 +2079,41 @@ class App {
             const labelColors = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'indigo', 'purple', 'pink', 'slate'];
             const version = '<?php echo BECKON_VERSION; ?>';
             let tributeInstance = null;
+            const toggleReaction = async (commentId, emoji) => {
+                const comment = activeCardMeta.value.comments.find(c => c.id === commentId);
+                if (!comment) return;
+                
+                comment.reactions = comment.reactions || [];
+                let r = comment.reactions.find(r => r.emoji === emoji);
+                const uid = currentUser.value.id;
+                
+                if (r) {
+                    const idx = r.users.indexOf(uid);
+                    if (idx > -1) {
+                        r.users.splice(idx, 1);
+                        if (r.users.length === 0) comment.reactions = comment.reactions.filter(rx => rx.emoji !== emoji);
+                    } else {
+                        r.users.push(uid);
+                    }
+                } else {
+                    comment.reactions.push({ emoji, users: [uid] });
+                }
+                
+                try {
+                    await api('toggle_reaction', { 
+                        card_id: activeCard.value.data.id, 
+                        comment_id: commentId, 
+                        emoji, 
+                        user_id: uid 
+                    });
+                } catch (e) { console.error(e); }
+            };
+            const closeReactionPicker = () => {
+                // Delay closing slightly so clicking a Tribute menu item registers first
+                setTimeout(() => {
+                    reactingToCommentId.value = null;
+                }, 200);
+            };
 
             // --- Utils ---
             const generateId = () => {
@@ -2028,6 +2156,7 @@ class App {
             const showCoverModalState = ref(false);
             const showMoveModalState = ref(false);
             const isArchiveOpen = ref(false);
+            const reactingToCommentId = ref(null);
 
             // --- Reactive State: Inputs & Temporary ---
             const boardSearch = ref('');
@@ -2764,7 +2893,99 @@ class App {
                 
                 // Forms
                 newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText, moveDestination,
-                editingUser, curlInput,
+                editingUser, curlInput, reactingToCommentId, closeReactionPicker,
+
+                openReactionPicker: (commentId) => {
+                    reactingToCommentId.value = commentId;
+                    nextTick(() => {
+                        const el = document.getElementById('reaction-input-' + commentId);
+                        if (el) {
+                            el.focus();
+                            const t = new Tribute({
+                                trigger: '', 
+                                
+                                // --- FIX START ---
+                                // 1. Treat the entire input as the search value
+                                autocompleteMode: true,
+                                // 2. Allow triggering at the very start of the input (index 0)
+                                requireLeadingSpace: false,
+                                // --- FIX END ---
+                                
+                                values: (text, cb) => { 
+                                    const term = text.toLowerCase(); 
+                                    cb(emojiData.value
+                                        .filter(e => e.key.includes(term))
+                                        .slice(0, 50) 
+                                    ); 
+                                },
+                                menuItemTemplate: (item) => `<span class="mr-2 text-lg">${item.original.emoji}</span> ${item.original.key}`,
+                                selectTemplate: (item) => `:${item.original.value}:`,
+                                lookup: 'key',
+                                fillAttr: 'value',
+                                allowSpaces: true,
+                                menuContainer: document.body
+                            });
+                            t.attach(el);
+
+                            el.value = ""; 
+                            
+                            // Force the menu to open immediately
+                            t.showMenuForCollection(el);
+
+                            el.addEventListener('tribute-replaced', (e) => {
+                                const emoji = e.target.value.trim(); 
+                                if (emoji) {
+                                    toggleReaction(commentId, emoji);
+                                }
+                                reactingToCommentId.value = null;
+                            });
+                        }
+                    });
+                },
+
+                toggleReaction: async (commentId, emoji) => {
+                    // Optimistic UI Update
+                    const comment = activeCardMeta.value.comments.find(c => c.id === commentId);
+                    if (!comment) return;
+                    
+                    comment.reactions = comment.reactions || [];
+                    let r = comment.reactions.find(r => r.emoji === emoji);
+                    const uid = currentUser.value.id;
+                    
+                    if (r) {
+                        const idx = r.users.indexOf(uid);
+                        if (idx > -1) {
+                            r.users.splice(idx, 1);
+                            if (r.users.length === 0) comment.reactions = comment.reactions.filter(rx => rx.emoji !== emoji);
+                        } else {
+                            r.users.push(uid);
+                        }
+                    } else {
+                        comment.reactions.push({ emoji, users: [uid] });
+                    }
+                    
+                    try {
+                        await api('toggle_reaction', { 
+                            card_id: activeCard.value.data.id, 
+                            comment_id: commentId, 
+                            emoji, 
+                            user_id: uid 
+                        });
+                    } catch (e) {
+                        console.error(e);
+                        // Revert on failure could go here
+                    }
+                },
+
+                getReactionTooltip: (r) => {
+                    const names = r.users.map(uid => {
+                        const u = boardData.value.users[uid];
+                        return u ? u.fullName : 'Unknown';
+                    });
+                    return names.join(', ');
+                },
+
+                renderInlineMarkdown: (t) => md.renderInline(t || ''),
                 
                 // Drag & Drop
                 dragTarget, dragSource, startDrag, startListDrag, onDrop, onDragEnd, onCardDragOver, onListDragOver, hoveredCard,
