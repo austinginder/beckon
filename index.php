@@ -474,17 +474,25 @@ class App {
 
     protected function actionLoad($input, $boardId, $boardDir) {
         $layoutPath = "$boardDir/layout.json";
-        $data = json_decode(@file_get_contents($layoutPath), true) ?? [];
+        
+        // Use a shared lock for reading to prevent reading while a write is happening
+        $fp = fopen($layoutPath, 'r');
+        if (flock($fp, LOCK_SH)) {
+            $data = json_decode(stream_get_contents($fp), true) ?? [];
+            flock($fp, LOCK_UN);
+        } else {
+            // Fallback if lock fails (rare)
+            $data = json_decode(file_get_contents($layoutPath), true) ?? [];
+        }
+        fclose($fp);
+
         $users = json_decode(@file_get_contents("$boardDir/users.json"), true) ?? [];
         
-        // --- Migration Logic ---
-        // If version is missing or old, we need to migrate.
-        // We acquire a lock to ensure we don't migrate/write simultaneously.
-        if (!isset($data['version']) || $data['version'] < 1) {
+        // --- Migration Check ---
+        if (!isset($data['version']) || $data['version'] < 2) {
+            // Upgrade lock
             $data = $this->withBoardLock($boardId, function() use ($boardId, $boardDir, $layoutPath) {
-                // Re-read inside lock to prevent race conditions
                 $lockedData = json_decode(@file_get_contents($layoutPath), true) ?? [];
-                
                 if ($this->migrateBoard($boardId, $boardDir, $lockedData)) {
                     $this->atomicWrite($layoutPath, $lockedData);
                 }
@@ -492,26 +500,35 @@ class App {
             });
         }
 
+        // Ensure defaults
         if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
         if (!isset($data['archive'])) $data['archive'] = [];
         if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
 
-        // Hydrate Descriptions & Meta
-        $hydrate = function(&$cards) use ($boardDir) {
-            foreach ($cards as &$card) {
-                $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
-                // Ensure labels array exists for frontend safety
-                $card['labels'] = $card['labels'] ?? [];
-                $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true) ?? [];
-                $card['commentCount'] = isset($meta['comments']) ? count($meta['comments']) : 0;
-            }
-        };
-
-        foreach ($data['lists'] as &$list) $hydrate($list['cards']);
-        $hydrate($data['archive']);
         $data['users'] = $users;
-        
         return $data;
+    }
+
+    protected function actionGetCard($input, $boardId, $boardDir) {
+        $id = $input['id'];
+        if (!$id) throw new Exception("No ID");
+
+        $description = @file_get_contents("$boardDir/$id.md") ?: '';
+        $meta = json_decode(@file_get_contents("$boardDir/$id.json"), true) ?? [];
+        
+        // Merge defaults
+        $meta = array_merge([
+            'comments' => [], 
+            'activity' => [], 
+            'revisions' => [], 
+            'assigned_to' => [],
+            'checklists' => []
+        ], $meta);
+
+        return [
+            'description' => $description,
+            'meta' => $meta
+        ];
     }
 
     protected function actionLoadCardMeta($input, $boardId, $boardDir) {
@@ -575,7 +592,11 @@ class App {
 
     protected function actionMoveCardToBoard($input, $boardId, $boardDir) {
         $targetId = $input['target_board'];
-        
+
+        // Canonical Locking Order (Deadlock Prevention)
+        $firstLock  = ($boardId < $targetId) ? $boardId : $targetId;
+        $secondLock = ($boardId < $targetId) ? $targetId : $boardId;
+
         // Lock Source Board
         return $this->withBoardLock($boardId, function() use ($input, $boardId, $boardDir, $targetId) {
             // Lock Target Board (Nested Lock)
@@ -584,7 +605,7 @@ class App {
                 // --- Start Transaction Logic ---
                 $cardId = $input['id'];
                 $targetListId = $input['target_list_id'] ?? null;
-                $targetPath = $this->getBoardPath($targetId); // Helper validates path
+                $targetPath = $this->getBoardPath($targetId);
 
                 // 1. Read Source (Safe read due to lock)
                 $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
@@ -791,47 +812,91 @@ class App {
      */
     private function migrateBoard($boardId, $boardDir, &$data) {
         $modified = false;
+        // Start at current version, default to 0
         $currentVersion = $data['version'] ?? 0;
+        
+        // Target version (match your constant BECKON_VERSION major version)
+        $targetVersion = 2; 
 
-        // --- Migration: v0 -> v1 ---
-        if ($currentVersion < 1) {
-            $data['version'] = 1;
+        // Migration Loop: Sequential Updates
+        while ($currentVersion < $targetVersion) {
             
-            // 1. Ensure archive array exists
-            if (!isset($data['archive'])) $data['archive'] = [];
-            
-            // 2. Resilience Backfill:
-            // Iterate all cards to ensure ID.json contains the redundant 'title' and 'labels'.
-            // This protects against layout.json corruption for existing boards.
-            $allLists = $data['lists'] ?? [];
-            $allCards = [];
-            
-            foreach ($allLists as $list) {
-                if (!empty($list['cards'])) $allCards = array_merge($allCards, $list['cards']);
-            }
-            if (!empty($data['archive'])) {
-                $allCards = array_merge($allCards, $data['archive']);
-            }
-
-            foreach ($allCards as $card) {
-                $metaPath = "$boardDir/{$card['id']}.json";
-                if (file_exists($metaPath)) {
-                    $meta = json_decode(file_get_contents($metaPath), true);
-                    
-                    // Only write if missing to save I/O
-                    if (!isset($meta['title']) || !isset($meta['labels'])) {
-                        $meta['title'] = $card['title'] ?? 'Untitled';
-                        $meta['labels'] = $card['labels'] ?? [];
-                        // We don't need a lock here strictly, as we are upgrading old static data
-                        $this->atomicWrite($metaPath, $meta);
+            // --- v0 -> v1: Basic Hygiene ---
+            if ($currentVersion < 1) {
+                if (!isset($data['archive'])) {
+                    $data['archive'] = [];
+                    $modified = true;
+                }
+                // (Existing logic: ensure meta files have title/labels)
+                $allCards = $this->getAllCardsFlat($data);
+                foreach ($allCards as $card) {
+                    $metaPath = "$boardDir/{$card['id']}.json";
+                    if (file_exists($metaPath)) {
+                        $meta = json_decode(file_get_contents($metaPath), true);
+                        if (!isset($meta['title']) || !isset($meta['labels'])) {
+                            $meta['title'] = $card['title'] ?? 'Untitled';
+                            $meta['labels'] = $card['labels'] ?? [];
+                            $this->atomicWrite($metaPath, $meta);
+                        }
                     }
                 }
+                $currentVersion = 1;
+                $modified = true;
             }
 
-            $modified = true;
+            // --- v1 -> v2: Performance Backfill ---
+            if ($currentVersion < 2) {
+                $processList = function(&$cards) use ($boardDir) {
+                    foreach ($cards as &$card) {
+                        // 1. Backfill Comment Count
+                        if (!isset($card['commentCount'])) {
+                            $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true);
+                            $card['commentCount'] = isset($meta['comments']) ? count($meta['comments']) : 0;
+                        }
+
+                        // Read Markdown content
+                        $md = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
+
+                        // 2. Backfill "Has Description" / "Has Attachment"
+                        if (!isset($card['hasDesc']) || !isset($card['hasAtt'])) {
+                            $card['hasDesc'] = !empty(trim($md));
+                            $card['hasAtt'] = (strpos($md, '/uploads/') !== false);
+                        }
+
+                        // 3. Backfill Markdown Checkbox Stats (NEW)
+                        // Only strictly necessary if they don't have UI checklists, 
+                        // but good to calculate anyway.
+                        if (!isset($card['descStats'])) {
+                            $total = preg_match_all('/- \[[ xX]\]/', $md); // Matches - [ ] and - [x]
+                            $done = preg_match_all('/- \[[xX]\]/', $md);   // Matches - [x]
+                            
+                            // Only save if there are actually tasks
+                            if ($total > 0) {
+                                $card['descStats'] = ['total' => $total, 'done' => $done];
+                            }
+                        }
+                    }
+                };
+
+                foreach ($data['lists'] as &$list) $processList($list['cards']);
+                if (isset($data['archive'])) $processList($data['archive']);
+                
+                $currentVersion = 2;
+                $modified = true;
+            }
         }
 
+        $data['version'] = $currentVersion;
         return $modified;
+    }
+
+    // Helper for migration
+    private function getAllCardsFlat($data) {
+        $all = $data['archive'] ?? [];
+        foreach ($data['lists'] as $list) {
+            $all = array_merge($all, $list['cards'] ?? []);
+        }
+        return $all;
     }
 }
 
@@ -1128,8 +1193,8 @@ class App {
                                 
                                 <div class="flex items-center justify-between">
                                     <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
-                                        <span v-if="card.description"><icon name="text" class="w-3 h-3 inline"></icon></span>
-                                        <span v-if="hasAttachment(card.description)" title="Has Attachments">
+                                        <span v-if="card.hasDesc"><icon name="text" class="w-3 h-3 inline"></icon></span>
+                                        <span v-if="card.hasAtt" title="Has Attachments">
                                             <icon name="paperclip" class="w-3 h-3 inline"></icon>
                                         </span>
                                         <span v-if="card.commentCount > 0" title="Comments" class="flex items-center gap-0.5">
@@ -2231,25 +2296,65 @@ class App {
             const openCardModal = async (lIdx, cIdx) => {
                 const isArchived = lIdx === 'archive';
                 const card = isArchived ? boardData.value.archive[cIdx] : boardData.value.lists[lIdx].cards[cIdx];
+                
+                // 1. Set minimal data immediately (for instant UI feedback)
                 activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: card };
-                originalDescription.value = card.description || '';
+                originalDescription.value = ''; // Clear previous
                 revisionIndex.value = -1;
-                isModalOpen.value = true;
                 activeCardMeta.value = { comments: [], activity: [], revisions: [], assigned_to: [], checklists: [] };
                 
-                if(card.id) try { 
-                    const m = await api('load_card_meta', {id: card.id});
-                    activeCardMeta.value = { 
-                        comments: m.comments||[], activity: m.activity||[], revisions: m.revisions||[], assigned_to: m.assigned_to||[], checklists: m.checklists||[]
-                    };
-                } catch(e){}
+                isModalOpen.value = true;
+
+                // 2. Fetch heavy data asynchronously
+                if(card.id) {
+                    try {
+                        // Using the new specialized endpoint
+                        const res = await api('get_card', { id: card.id });
+                        
+                        // Populate the UI
+                        activeCard.value.data.description = res.description;
+                        originalDescription.value = res.description;
+                        
+                        activeCardMeta.value = { 
+                            comments: res.meta.comments || [], 
+                            activity: res.meta.activity || [], 
+                            revisions: res.meta.revisions || [], 
+                            assigned_to: res.meta.assigned_to || [], 
+                            checklists: res.meta.checklists || []
+                        };
+                    } catch(e) {
+                        console.error("Failed to load card details", e);
+                        alert("Could not load card details. Please check connection.");
+                    }
+                }
             };
 
             const debouncedSaveCard = () => { 
+                const txt = activeCard.value.data.description || '';
+                
+                // 1. Update simple flags
+                activeCard.value.data.hasDesc = txt.trim().length > 0;
+                activeCard.value.data.hasAtt = txt.indexOf('/uploads/') !== -1;
+
+                // 2. Update Markdown Task Stats (NEW)
+                const total = (txt.match(/- \[[ xX]\]/g) || []).length;
+                const done = (txt.match(/- \[[xX]\]/g) || []).length;
+                
+                if (total > 0) {
+                    activeCard.value.data.descStats = { total, done };
+                } else {
+                    delete activeCard.value.data.descStats; // Clean up if they removed tasks
+                }
+
+                // 3. Persist
                 saveLocal(); 
                 syncState.value='saving'; 
                 clearTimeout(debounceTimer); 
-                debounceTimer = setTimeout(() => { persistCardDesc(activeCard.value.data); syncState.value='synced'; }, 1000); 
+                debounceTimer = setTimeout(() => { 
+                    persistCardDesc(activeCard.value.data); 
+                    persistLayout();
+                    syncState.value='synced'; 
+                }, 1000); 
             };
 
             const closeModal = () => {
@@ -2298,6 +2403,7 @@ class App {
                 activeCard.value.data.commentCount = (activeCard.value.data.commentCount || 0) + 1;
                 newComment.value = ''; 
                 persistMeta(activeCard.value.data.id, activeCardMeta.value);
+                persistLayout();
             };
 
             const uploadFile = (file) => {
@@ -2574,7 +2680,16 @@ class App {
                 formatDateShort: (iso) => dayjs(iso).format('MMM D'),
                 getDueDateColor: (d) => { const diff = dayjs(d).diff(dayjs(), 'day'); return diff < 0 ? 'bg-red-100 text-red-600' : diff <= 2 ? 'bg-yellow-100 text-yellow-600' : 'bg-slate-200 text-slate-500'; },
                 hasAttachment: (text) => text && text.indexOf('/uploads/') !== -1,
-                getTaskStats: (card) => card.checklistStats || { total: (card.description||'').match(/- \[[ xX]\]/g)?.length||0, done: (card.description||'').match(/- \[[xX]\]/g)?.length||0 },
+                getTaskStats: (card) => {
+                    // Priority 1: UI Checklists (The specialized checklist feature)
+                    if (card.checklistStats) return card.checklistStats;
+                    
+                    // Priority 2: Markdown Stats (Calculated from description)
+                    if (card.descStats) return card.descStats;
+                    
+                    // Priority 3: Fallback (Empty)
+                    return { total: 0, done: 0 };
+                },
                 renderMarkdown: (t) => marked.parse(t || '').replace(/disabled=""/g, ''),
                 
                 // Methods: Uploads
