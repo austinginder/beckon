@@ -133,7 +133,6 @@ class App {
         $usersMap = [];
         $avatarDir = "$targetDir/uploads/avatars";
         
-        // Helper to download avatar
         $downloadAvatar = function($id, $hash) use ($avatarDir, $slug) {
             if (!$hash) return null;
             $url = "https://trello-members.s3.amazonaws.com/{$id}/{$hash}/170.png";
@@ -241,13 +240,11 @@ class App {
         foreach ($json['cards'] as $c) {
             $isArchived = $c['closed'] || isset($closedListIds[$c['idList']]) || !isset($listMap[$c['idList']]);
             
-            // --- ID TRANSFORMATION LOGIC ---
             $timestamp = hexdec(substr($c['id'], 0, 8));
             $createdDate = date('c', $timestamp);
             $datePrefix = date('Y-m-d', $timestamp);
             $newId = "{$datePrefix}_{$c['id']}";
 
-            // Cover Image Logic
             $coverImagePath = null;
             if (!empty($c['idAttachmentCover']) && isset($attachmentMap[$c['idAttachmentCover']])) {
                 $att = $attachmentMap[$c['idAttachmentCover']];
@@ -256,7 +253,6 @@ class App {
                 $coverImagePath = "boards/$slug/uploads/$filename";
             }
 
-            // Checklists
             $cardChecklists = [];
             $checklistStats = ['total' => 0, 'done' => 0];
             if (isset($checklists[$c['id']])) {
@@ -272,7 +268,6 @@ class App {
                 }
             }
 
-            // Labels
             $mappedLabels = [];
             foreach ($c['labels'] ?? [] as $l) {
                 $colorKey = $l['color'] ?? 'black';
@@ -296,7 +291,6 @@ class App {
             if ($isArchived) $archive[] = $cardData;
             else $lists[$listMap[$c['idList']]]['cards'][] = $cardData;
 
-            // Save Files using new ID
             $this->atomicWrite("$targetDir/{$newId}.md", $c['desc']);
             
             $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
@@ -682,17 +676,6 @@ class App {
         $files = glob("$boardDir/uploads/*.{jpg,jpeg,png,gif,webp,JPG,JPEG,PNG,GIF,WEBP}", GLOB_BRACE);
         usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
         return ['files' => array_map(fn($f) => "boards/$boardId/uploads/" . basename($f), $files)];
-    }
-
-    protected function actionSaveRevision($input, $boardId, $boardDir) {
-        $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
-        $meta['revisions'] = $meta['revisions'] ?? [];
-        array_unshift($meta['revisions'], [
-            'id' => uniqid(), 'date' => date('c'), 'text' => $input['text'], 'user' => $input['user'] ?? 'Unknown'
-        ]);
-        if (count($meta['revisions']) > 50) $meta['revisions'] = array_slice($meta['revisions'], 0, 50);
-        $this->atomicWrite("$boardDir/{$input['id']}.json", $meta);
-        return ['status' => 'saved'];
     }
 
     protected function actionDeleteCard($input, $boardId, $boardDir) {
@@ -2755,18 +2738,6 @@ class App {
                     allowSpaces: false
                 });
 
-                const editor = document.getElementById('editor-textarea');
-                if (editor) {
-                    tribute.attach(editor);
-                    
-                    // CRITICAL: Vue doesn't know Tribute changed the text. 
-                    // We must manually trigger an update so v-model stays in sync.
-                    editor.addEventListener('tribute-replaced', (e) => {
-                        activeCard.value.data.description = e.target.value;
-                        // Trigger the autosave logic
-                        debouncedSaveCard(); 
-                    });
-                }
             });
 
 
