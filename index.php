@@ -83,7 +83,7 @@ class App {
 
             $latestVersion = basename($effectiveUrl);
             $state = ['last_check' => time(), 'latest_version' => $latestVersion];
-            file_put_contents($stateFile, json_encode($state));
+            $this->atomicWrite($stateFile, $state);
         }
 
         return [
@@ -102,7 +102,11 @@ class App {
         if (!$newContent || strpos($newContent, '<?php') !== 0) throw new Exception("Download failed or invalid file signature.");
 
         if (!copy(__FILE__, __FILE__ . '.bak')) throw new Exception("Could not create backup.");
-        if (file_put_contents(__FILE__, $newContent) === false) throw new Exception("Could not overwrite index.php.");
+        $this->atomicWrite(__FILE__, $newContent);
+
+        if (function_exists('opcache_reset')) {
+            opcache_reset();
+        }
 
         return ['status' => 'updated'];
     }
@@ -136,7 +140,7 @@ class App {
             $filename = "{$id}.png";
             $content = @file_get_contents($url);
             if ($content) {
-                file_put_contents("$avatarDir/$filename", $content);
+                $this->atomicWrite("$avatarDir/$filename", $content);
                 return "boards/$slug/uploads/avatars/$filename";
             }
             return null;
@@ -278,7 +282,8 @@ class App {
             }
 
             $cardData = [
-                'id' => $c['id'], 'title' => $c['name'],
+                'id' => $newId,
+                'title' => $c['name'],
                 'labels' => $mappedLabels,
                 'startDate' => (isset($c['start']) && $c['start']) ? substr($c['start'], 0, 10) : null,
                 'dueDate' => $c['due'] ? substr($c['due'], 0, 10) : null,
@@ -291,8 +296,8 @@ class App {
             if ($isArchived) $archive[] = $cardData;
             else $lists[$listMap[$c['idList']]]['cards'][] = $cardData;
 
-            // Save Files
-            file_put_contents("$targetDir/{$c['id']}.md", $c['desc']);
+            // Save Files using new ID
+            $this->atomicWrite("$targetDir/{$newId}.md", $c['desc']);
             
             $meta = $cardMeta[$c['id']] ?? ['comments' => [], 'activity' => [], 'revisions' => []];
             $meta['activity'] = array_reverse($meta['activity']);
@@ -300,21 +305,23 @@ class App {
             $meta['assigned_to'] = $c['idMembers'] ?? [];
             $meta['created_at'] = $createdDate;
             $meta['checklists'] = $cardChecklists;
-            
-            file_put_contents("$targetDir/{$c['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
+            $meta['title'] = $c['name'];
+            $meta['labels'] = $mappedLabels;
+
+            $this->atomicWrite("$targetDir/{$newId}.json", $meta);
         }
 
-        file_put_contents("$targetDir/layout.json", json_encode([
+        $this->atomicWrite("$targetDir/layout.json", [
             'title' => $json['name'], 'lists' => $lists, 'archive' => $archive
-        ], JSON_PRETTY_PRINT));
+        ]);
 
-        file_put_contents("$targetDir/users.json", json_encode($usersMap, JSON_PRETTY_PRINT));
+        $this->atomicWrite("$targetDir/users.json", (object)$usersMap);
 
         return ['status' => 'imported', 'board' => $slug];
     }
 
     protected function actionSaveUsers($input, $boardId, $boardDir) {
-        file_put_contents("$boardDir/users.json", json_encode($input['users'], JSON_PRETTY_PRINT));
+        $this->atomicWrite("$boardDir/users.json", $input['users']);
         return ['status' => 'saved'];
     }
 
@@ -417,8 +424,9 @@ class App {
         $p = $this->getBoardPath($slug);
         mkdir($p, 0755, true);
         mkdir("$p/uploads", 0755, true);
-        file_put_contents("$p/layout.json", json_encode(['title' => $title, 'lists' => []], JSON_PRETTY_PRINT));
-        file_put_contents("$p/users.json", json_encode([], JSON_PRETTY_PRINT));
+        
+        $this->atomicWrite("$p/layout.json", ['version' => 1, 'title' => $title, 'lists' => []]);
+        $this->atomicWrite("$p/users.json", new \stdClass());
         
         return ['status' => 'ok', 'id' => $slug];
     }
@@ -446,7 +454,7 @@ class App {
 
         $layout = json_decode(file_get_contents("$boardDir/layout.json"), true);
         $layout['title'] = $newTitle;
-        file_put_contents("$boardDir/layout.json", json_encode($layout, JSON_PRETTY_PRINT));
+        $this->atomicWrite("$boardDir/layout.json", $layout);
 
         if ($boardId !== $newSlug) {
             $newPath = $this->boardsDir . '/' . $newSlug;
@@ -456,7 +464,7 @@ class App {
             foreach (glob("$boardDir/*.md") as $file) {
                 $c = file_get_contents($file);
                 $newC = str_replace("boards/$boardId/uploads/", "boards/$newSlug/uploads/", $c);
-                if ($c !== $newC) file_put_contents($file, $newC);
+                if ($c !== $newC) $this->atomicWrite($file, $newC);
             }
             rename($boardDir, $newPath);
             return ['status' => 'renamed', 'id' => $newSlug, 'name' => $newTitle];
@@ -465,16 +473,34 @@ class App {
     }
 
     protected function actionLoad($input, $boardId, $boardDir) {
-        $data = json_decode(@file_get_contents("$boardDir/layout.json"), true) ?? [];
+        $layoutPath = "$boardDir/layout.json";
+        $data = json_decode(@file_get_contents($layoutPath), true) ?? [];
         $users = json_decode(@file_get_contents("$boardDir/users.json"), true) ?? [];
         
+        // --- Migration Logic ---
+        // If version is missing or old, we need to migrate.
+        // We acquire a lock to ensure we don't migrate/write simultaneously.
+        if (!isset($data['version']) || $data['version'] < 1) {
+            $data = $this->withBoardLock($boardId, function() use ($boardId, $boardDir, $layoutPath) {
+                // Re-read inside lock to prevent race conditions
+                $lockedData = json_decode(@file_get_contents($layoutPath), true) ?? [];
+                
+                if ($this->migrateBoard($boardId, $boardDir, $lockedData)) {
+                    $this->atomicWrite($layoutPath, $lockedData);
+                }
+                return $lockedData;
+            });
+        }
+
         if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
         if (!isset($data['archive'])) $data['archive'] = [];
         if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
 
+        // Hydrate Descriptions & Meta
         $hydrate = function(&$cards) use ($boardDir) {
             foreach ($cards as &$card) {
                 $card['description'] = @file_get_contents("$boardDir/{$card['id']}.md") ?: '';
+                // Ensure labels array exists for frontend safety
                 $card['labels'] = $card['labels'] ?? [];
                 $meta = json_decode(@file_get_contents("$boardDir/{$card['id']}.json"), true) ?? [];
                 $card['commentCount'] = isset($meta['comments']) ? count($meta['comments']) : 0;
@@ -494,21 +520,40 @@ class App {
     }
 
     protected function actionSaveLayout($input, $boardId, $boardDir) {
-        // Strip descriptions
-        foreach ($input['lists'] as &$list) foreach ($list['cards'] as &$card) unset($card['description']);
-        if (isset($input['archive'])) foreach ($input['archive'] as &$card) unset($card['description']);
-        
-        file_put_contents("$boardDir/layout.json", json_encode($input, JSON_PRETTY_PRINT));
-        return ['status' => 'saved'];
+        return $this->withBoardLock($boardId, function() use ($input, $boardDir) {
+            // 1. Schema: Ensure version exists
+            $input['version'] = $input['version'] ?? 1;
+
+            // Strip descriptions (keep layout lightweight)
+            foreach ($input['lists'] as &$list) {
+                foreach ($list['cards'] as &$card) {
+                    unset($card['description']);
+                    // Resilience: In a heavier app, we would write to ID.json here,
+                    // but for v1 performance, we rely on the lock to protect layout.json.
+                }
+            }
+            if (isset($input['archive'])) {
+                foreach ($input['archive'] as &$card) unset($card['description']);
+            }
+            
+            // 2. Write safely inside the lock
+            $this->atomicWrite("$boardDir/layout.json", $input);
+            return ['status' => 'saved', 'version' => 1];
+        });
     }
 
     protected function actionSaveCard($input, $boardId, $boardDir) {
-        file_put_contents("$boardDir/{$input['id']}.md", $input['description'] ?? '');
+        $this->atomicWrite("$boardDir/{$input['id']}.md", $input['description'] ?? '');
         return ['status' => 'saved'];
     }
 
     protected function actionSaveCardMeta($input, $boardId, $boardDir) {
-        file_put_contents("$boardDir/{$input['id']}.json", json_encode($input['meta'], JSON_PRETTY_PRINT));
+        $meta = $input['meta'];
+
+        if (isset($input['title'])) $meta['title'] = $input['title'];
+        if (isset($input['labels'])) $meta['labels'] = $input['labels'];
+        
+        $this->atomicWrite("$boardDir/{$input['id']}.json", $meta);
         return ['status' => 'saved'];
     }
 
@@ -530,74 +575,86 @@ class App {
 
     protected function actionMoveCardToBoard($input, $boardId, $boardDir) {
         $targetId = $input['target_board'];
-        $cardId = $input['id'];
-        $targetListId = $input['target_list_id'] ?? null;
-        $targetPath = $this->getBoardPath($targetId);
         
-        if (!file_exists($targetPath)) throw new Exception("Target board not found");
+        // Lock Source Board
+        return $this->withBoardLock($boardId, function() use ($input, $boardId, $boardDir, $targetId) {
+            // Lock Target Board (Nested Lock)
+            return $this->withBoardLock($targetId, function() use ($input, $boardId, $boardDir, $targetId) {
+                
+                // --- Start Transaction Logic ---
+                $cardId = $input['id'];
+                $targetListId = $input['target_list_id'] ?? null;
+                $targetPath = $this->getBoardPath($targetId); // Helper validates path
 
-        $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
-        $cardData = null;
-        $cardFound = false;
-        
-        foreach ($sourceLayout['lists'] as &$list) {
-            foreach ($list['cards'] as $key => $card) {
-                if ($card['id'] == $cardId) {
-                    $cardData = $card;
-                    array_splice($list['cards'], $key, 1);
-                    $cardFound = true;
-                    break 2;
+                // 1. Read Source (Safe read due to lock)
+                $sourceLayout = json_decode(file_get_contents("$boardDir/layout.json"), true);
+                $cardData = null;
+                
+                // Find and remove from source
+                foreach ($sourceLayout['lists'] as &$list) {
+                    foreach ($list['cards'] as $key => $card) {
+                        if ($card['id'] == $cardId) {
+                            $cardData = $card;
+                            array_splice($list['cards'], $key, 1);
+                            break 2;
+                        }
+                    }
                 }
-            }
-        }
-
-        if (!$cardFound && isset($sourceLayout['archive'])) {
-            foreach ($sourceLayout['archive'] as $key => $card) {
-                if ($card['id'] == $cardId) {
-                    $cardData = $card;
-                    array_splice($sourceLayout['archive'], $key, 1);
-                    break;
+                
+                // Check archive if not found in lists
+                if (!$cardData && isset($sourceLayout['archive'])) {
+                    foreach ($sourceLayout['archive'] as $key => $card) {
+                        if ($card['id'] == $cardId) {
+                            $cardData = $card;
+                            array_splice($sourceLayout['archive'], $key, 1);
+                            break;
+                        }
+                    }
                 }
-            }
-        }
 
-        if (!$cardData) throw new Exception("Card not found");
+                if (!$cardData) throw new Exception("Card not found");
 
-        $targetLayout = json_decode(@file_get_contents("$targetPath/layout.json"), true) ?? [];
-        if (empty($targetLayout['lists'])) $targetLayout['lists'] = [['id' => 'l1', 'title' => 'Inbox', 'cards' => []]];
-        
-        $listFound = false;
-        if ($targetListId) {
-            foreach ($targetLayout['lists'] as &$list) {
-                if ($list['id'] == $targetListId) {
-                    array_unshift($list['cards'], $cardData);
-                    $listFound = true;
-                    break;
+                // 2. Read Target (Safe read due to lock)
+                $targetLayout = json_decode(@file_get_contents("$targetPath/layout.json"), true) ?? [];
+                if (empty($targetLayout['lists'])) $targetLayout['lists'] = [['id' => 'l1', 'title' => 'Inbox', 'cards' => []]];
+                
+                // Add to target
+                $listFound = false;
+                if ($targetListId) {
+                    foreach ($targetLayout['lists'] as &$list) {
+                        if ($list['id'] == $targetListId) {
+                            array_unshift($list['cards'], $cardData);
+                            $listFound = true;
+                            break;
+                        }
+                    }
                 }
-            }
-        }
+                if (!$listFound) array_unshift($targetLayout['lists'][0]['cards'], $cardData);
 
-        if (!$listFound) {
-            array_unshift($targetLayout['lists'][0]['cards'], $cardData);
-        }
+                // 3. Move Physical Files
+                foreach (["$cardId.md", "$cardId.json"] as $f) {
+                    if (file_exists("$boardDir/$f")) rename("$boardDir/$f", "$targetPath/$f");
+                }
 
-        foreach (["$cardId.md", "$cardId.json"] as $f) {
-            if (file_exists("$boardDir/$f")) rename("$boardDir/$f", "$targetPath/$f");
-        }
+                // 4. Update Activity Log
+                $metaFile = "$targetPath/$cardId.json";
+                $meta = json_decode(@file_get_contents($metaFile), true) ?? [];
+                $meta['activity'] = $meta['activity'] ?? [];
+                $targetTitle = $targetLayout['title'] ?? $targetId;
+                array_unshift($meta['activity'], ['text' => "Moved from board '{$sourceLayout['title']}' to '{$targetTitle}'", 'date' => date('c')]);
+                
+                // Resilience: Ensure ID.json has the card title/labels backup
+                $meta['title'] = $cardData['title'];
+                $meta['labels'] = $cardData['labels'] ?? [];
+                $this->atomicWrite($metaFile, $meta);
 
-        file_put_contents("$boardDir/layout.json", json_encode($sourceLayout, JSON_PRETTY_PRINT));
-        file_put_contents("$targetPath/layout.json", json_encode($targetLayout, JSON_PRETTY_PRINT));
-        
-        // Log Activity
-        $metaFile = "$targetPath/$cardId.json";
-        $meta = json_decode(@file_get_contents($metaFile), true) ?? ['activity' => []];
-        $meta['activity'] = $meta['activity'] ?? [];
-        $targetTitle = $targetLayout['title'] ?? $targetId;
-        array_unshift($meta['activity'], ['text' => "Moved from board '{$sourceLayout['title']}' to '{$targetTitle}'", 'date' => date('c')]);
+                // 5. Commit Writes
+                $this->atomicWrite("$boardDir/layout.json", $sourceLayout);
+                $this->atomicWrite("$targetPath/layout.json", $targetLayout);
 
-        file_put_contents($metaFile, json_encode($meta, JSON_PRETTY_PRINT));
-
-        return ['status' => 'moved'];
+                return ['status' => 'moved'];
+            });
+        });
     }
 
     protected function actionListUploads($input, $boardId, $boardDir) {
@@ -613,7 +670,7 @@ class App {
             'id' => uniqid(), 'date' => date('c'), 'text' => $input['text'], 'user' => $input['user'] ?? 'Unknown'
         ]);
         if (count($meta['revisions']) > 50) $meta['revisions'] = array_slice($meta['revisions'], 0, 50);
-        file_put_contents("$boardDir/{$input['id']}.json", json_encode($meta, JSON_PRETTY_PRINT));
+        $this->atomicWrite("$boardDir/{$input['id']}.json", $meta);
         return ['status' => 'saved'];
     }
 
@@ -650,8 +707,131 @@ class App {
     }
 
     private function slugify($text) {
-        $text = preg_replace('/[^a-z0-9-]/i', '-', strtolower($text));
+        $text = preg_replace('/[^a-z0-9-_]/i', '-', strtolower($text));
         return trim(preg_replace('/-+/', '-', $text), '-');
+    }
+
+    // --- Safe File Operations ---
+
+    /**
+     * Executes a callback within an exclusive lock on the board directory.
+     * Prevents race conditions when multiple users move cards simultaneously.
+     */
+    private function withBoardLock($boardId, callable $callback) {
+        if (!$boardId) throw new Exception("No board specified for locking");
+        
+        $lockFile = $this->boardsDir . '/' . $boardId . '/lock';
+        $fp = fopen($lockFile, 'c+'); // Create if not exists, don't truncate
+        if (!$fp) throw new Exception("Could not open lock file");
+
+        // Acquire exclusive lock (this will wait/block until available)
+        if (!flock($fp, LOCK_EX)) {
+            fclose($fp);
+            throw new Exception("Could not acquire lock");
+        }
+
+        try {
+            return $callback();
+        } finally {
+            flock($fp, LOCK_UN); // Release lock
+            fclose($fp);
+        }
+    }
+
+    /**
+     * Writes data to a file atomically with exclusive locking.
+     * Handles arrays (auto-JSON) and strings.
+     */
+    private function atomicWrite($filepath, $data) {
+        $content = (is_array($data) || is_object($data)) 
+            ? json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) 
+            : $data;
+
+        $tempPath = $filepath . '.tmp.' . uniqid(); // Unique temp file
+        
+        $fp = fopen($tempPath, 'w');
+        if (!$fp) throw new Exception("Could not open temp file: $tempPath");
+
+        if (!flock($fp, LOCK_EX)) { // Acquire exclusive lock
+            fclose($fp);
+            throw new Exception("Could not lock file: $tempPath");
+        }
+
+        $written = fwrite($fp, $content);
+        fflush($fp);            // Flush output before releasing lock
+        flock($fp, LOCK_UN);    // Release lock
+        fclose($fp);
+
+        if ($written === false) {
+            @unlink($tempPath);
+            throw new Exception("Failed to write data to $tempPath");
+        }
+
+        if (DIRECTORY_SEPARATOR === '\\' && file_exists($filepath)) {
+            $deleted = @unlink($filepath);
+            if (!$deleted) {
+                @unlink($tempPath);
+                throw new Exception("Could not overwrite existing file on Windows: $filepath");
+            }
+        }
+
+        if (!rename($tempPath, $filepath)) {
+            @unlink($tempPath);
+            throw new Exception("Failed to move temp file to $filepath");
+        }
+
+        @chmod($filepath, 0644);
+        
+        return true;
+    }
+
+    /**
+     * Handles schema migrations and data integrity checks.
+     * Upgrades older board data structures to the current version.
+     */
+    private function migrateBoard($boardId, $boardDir, &$data) {
+        $modified = false;
+        $currentVersion = $data['version'] ?? 0;
+
+        // --- Migration: v0 -> v1 ---
+        if ($currentVersion < 1) {
+            $data['version'] = 1;
+            
+            // 1. Ensure archive array exists
+            if (!isset($data['archive'])) $data['archive'] = [];
+            
+            // 2. Resilience Backfill:
+            // Iterate all cards to ensure ID.json contains the redundant 'title' and 'labels'.
+            // This protects against layout.json corruption for existing boards.
+            $allLists = $data['lists'] ?? [];
+            $allCards = [];
+            
+            foreach ($allLists as $list) {
+                if (!empty($list['cards'])) $allCards = array_merge($allCards, $list['cards']);
+            }
+            if (!empty($data['archive'])) {
+                $allCards = array_merge($allCards, $data['archive']);
+            }
+
+            foreach ($allCards as $card) {
+                $metaPath = "$boardDir/{$card['id']}.json";
+                if (file_exists($metaPath)) {
+                    $meta = json_decode(file_get_contents($metaPath), true);
+                    
+                    // Only write if missing to save I/O
+                    if (!isset($meta['title']) || !isset($meta['labels'])) {
+                        $meta['title'] = $card['title'] ?? 'Untitled';
+                        $meta['labels'] = $card['labels'] ?? [];
+                        // We don't need a lock here strictly, as we are upgrading old static data
+                        $this->atomicWrite($metaPath, $meta);
+                    }
+                }
+            }
+
+            $modified = true;
+        }
+
+        return $modified;
     }
 }
 
