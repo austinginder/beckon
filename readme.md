@@ -23,9 +23,16 @@
     * Detailed revision history for every card description.
     * Use the **history slider** to preview past versions and restore them with a single click.
 * **Trello Import:** Native support for importing Trello JSON exports (lists, cards, checklists, labels, and comments).
+    * **Private Board Support:** Includes a utility to paste cURL headers, allowing Beckon to download attachments and avatars from private Trello boards during import.
 * **User Identity:** Simple "Guest" identity settings to customize your display name and avatar color for the session.
 * **Dark Mode:** Built-in toggle for light/dark themes.
 * **Activity Log:** Comments and activity history (moves, creations) are tracked per card.
+* **One-Click Updates:** Beckon checks for new releases automatically and can self-update the `index.php` file directly from the UI.
+
+## ⌨️ Keyboard Shortcuts
+* **`Enter`**: Open the currently hovered card.
+* **`c`**: Archive the currently hovered card (with confirmation).
+* **`Esc`**: Close modals or the board switcher.
 
 ## 🚀 Installation
 
