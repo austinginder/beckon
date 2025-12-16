@@ -402,6 +402,131 @@ class App {
         return ['status' => 'ok'];
     }
 
+    // --- WordPress Actions ---
+
+    protected function actionWpUpload($input, $boardId, $boardDir) {
+        $this->validateWpCreds($input);
+        
+        $localPath = $input['local_path'];
+        $realPath = realpath($this->baseDir . '/' . $localPath);
+        
+        // Security: Ensure we are only uploading files from inside the 'boards' directory
+        if (!$realPath || strpos($realPath, $this->boardsDir) !== 0 || !file_exists($realPath)) {
+            throw new Exception("File not found or access denied: $localPath");
+        }
+
+        $filename = basename($realPath);
+        $mime = mime_content_type($realPath);
+        $fileData = file_get_contents($realPath);
+
+        // Upload to WordPress
+        $url = rtrim($input['wp_url'], '/') . "/wp-json/wp/v2/media";
+        $headers = [
+            "Authorization: Basic " . base64_encode($input['wp_user'] . ":" . $input['wp_pass']),
+            "Content-Disposition: attachment; filename=\"$filename\"",
+            "Content-Type: $mime",
+            "User-Agent: Beckon/1.0"
+        ];
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_POSTFIELDS => $fileData,
+            CURLOPT_SSL_VERIFYPEER => false, // Dev friendly
+            CURLOPT_SSL_VERIFYHOST => false
+        ]);
+        
+        $res = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($code !== 201) {
+            $json = json_decode($res, true);
+            $msg = $json['message'] ?? $err ?? "HTTP $code";
+            throw new Exception("WP Upload Failed: $msg");
+        }
+
+        $data = json_decode($res, true);
+        return ['id' => $data['id'], 'url' => $data['source_url']];
+    }
+
+    protected function actionWpPost($input, $boardId, $boardDir) {
+        $this->validateWpCreds($input);
+        $html = $input['html'];
+
+        // --- Block Grammar Transformation ---
+        
+        // 1. Image Blocks
+        // We look for <img> tags that now have 'data-wp-id'. 
+        // We assume they are wrapped in <p> by markdown-it.
+        $html = preg_replace_callback(
+            '/<p>\s*<img\s+[^>]*data-wp-id="(\d+)"[^>]*src="([^"]+)"[^>]*>\s*<\/p>/i',
+            function($m) {
+                $id = $m[1];
+                $src = $m[2];
+                return sprintf(
+                    '<figure class="wp-block-image size-full"><img src="%s" class="wp-image-%d"/></figure>',
+                    $id, $src, $id
+                );
+            },
+            $html
+        );
+
+        // 2. Standard Blocks
+        $transforms = [
+            '/<h([1-6])>(.*?)<\/h\1>/' => '<h$1>$2</h$1>',
+            '/<ul>(.*?)<\/ul>/s' => '<ul>$1</ul>',
+            '/<ol>(.*?)<\/ol>/s' => '<ol>$1</ol>',
+            '/<blockquote>(.*?)<\/blockquote>/s' => '<blockquote class="wp-block-quote">$1</blockquote>',
+            '/<pre><code[^>]*>(.*?)<\/code><\/pre>/s' => '<pre class="wp-block-code"><code>$1</code></pre>',
+            '/<p>(.*?)<\/p>/' => '<p>$1</p>'
+        ];
+        $html = preg_replace(array_keys($transforms), array_values($transforms), $html);
+
+        // Send Post
+        $url = rtrim($input['wp_url'], '/') . "/wp-json/wp/v2/posts";
+        $postData = [
+            'title' => $input['title'],
+            'content' => $html,
+            'status' => 'draft'
+        ];
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                "Authorization: Basic " . base64_encode($input['wp_user'] . ":" . $input['wp_pass']),
+                "Content-Type: application/json",
+                "User-Agent: Beckon/1.0"
+            ],
+            CURLOPT_POSTFIELDS => json_encode($postData),
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false
+        ]);
+
+        $res = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($code !== 201) throw new Exception("WP Post Failed: HTTP $code");
+
+        $post = json_decode($res, true);
+        return [
+            'link' => $post['link'], 
+            'edit_link' => rtrim($input['wp_url'], '/') . "/wp-admin/post.php?post={$post['id']}&action=edit"
+        ];
+    }
+
+    private function validateWpCreds($input) {
+        if (empty($input['wp_url']) || empty($input['wp_user']) || empty($input['wp_pass'])) {
+            throw new Exception("Missing WordPress credentials");
+        }
+    }
+
     protected function actionListBoards() {
         $boards = [];
         foreach (glob($this->boardsDir . '/*', GLOB_ONLYDIR) as $dir) {
@@ -1735,6 +1860,11 @@ class App {
                                     <option v-for="b in availableBoards.filter(b => b.id !== currentBoardId)" :key="b.id" :value="b.id">{{ b.name }}</option>
                                 </select>
 
+                                <button @click="openWpModal" class="w-full text-left px-3 py-2 text-sm bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 rounded transition text-blue-600 dark:text-blue-400 font-medium flex items-center gap-2 mb-2">
+                                    <icon name="cloud" class="w-4 h-4"></icon>
+                                    Publish Draft to WP
+                                </button>
+
                                 <button @click="archiveActiveCard" class="w-full text-left px-3 py-2 text-sm bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded transition text-slate-700 dark:text-slate-200 font-medium flex items-center gap-2">
                                     <icon name="archive" class="w-4 h-4"></icon>
                                     Archive Card
@@ -1860,6 +1990,12 @@ class App {
                 Move Card
             </button>
 
+            <button @click="prepareWpPublish(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
+                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
+                <icon name="cloud" class="w-4 h-4 text-slate-400"></icon>
+                Publish to WP
+            </button>
+
             <button @click="openCoverModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
                     class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
                 <icon name="image" class="w-4 h-4 text-slate-400"></icon>
@@ -1953,6 +2089,90 @@ class App {
                 </div>
             </div>
         </div>
+       <div v-if="showWpModal" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[120] p-4 backdrop-blur-sm" @click.self="showWpModal = false">
+            <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-md overflow-hidden animate-fade-in-up border border-slate-200 dark:border-slate-700">
+                
+                <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
+                    <h3 class="font-bold text-slate-700 dark:text-slate-200">
+                        {{ wpManageMode ? 'Manage Sites' : 'Publish to WordPress' }}
+                    </h3>
+                    <button @click="showWpModal = false" class="text-slate-400 hover:text-red-500">
+                        <icon name="close" class="w-5 h-5"></icon>
+                    </button>
+                </div>
+
+                <div class="p-6">
+                    
+                    <div v-if="!wpManageMode">
+                        <div v-if="savedWpSites.length === 0" class="text-center py-6">
+                            <div class="text-slate-400 mb-4">No WordPress sites configured.</div>
+                            <button @click="wpManageMode = true" class="bg-blue-600 text-white px-4 py-2 rounded font-bold text-sm">Add Your First Site</button>
+                        </div>
+
+                        <div v-else>
+                            <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Select Destination</label>
+                            <div class="flex gap-2 mb-4">
+                                <select v-model="selectedSiteId" class="flex-1 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm text-slate-800 dark:text-slate-100 outline-none">
+                                    <option value="" disabled>Choose a site...</option>
+                                    <option v-for="s in savedWpSites" :key="s.id" :value="s.id">{{ s.name }} ({{ s.url }})</option>
+                                </select>
+                                <button @click="wpManageMode = true" class="px-3 py-2 bg-slate-200 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-300 hover:bg-slate-300 transition">
+                                    <icon name="pencil" class="w-4 h-4"></icon>
+                                </button>
+                            </div>
+
+                            <div v-if="isPublishing" class="mb-4 bg-slate-100 dark:bg-slate-900 rounded-lg p-3 border border-slate-200 dark:border-slate-700">
+                                <div class="flex justify-between text-xs font-bold text-slate-500 mb-2">
+                                    <span>{{ pubProgress.status }}</span>
+                                    <span>{{ Math.round(pubProgress.percent) }}%</span>
+                                </div>
+                                <div class="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                    <div class="h-full bg-blue-500 transition-all duration-300" :style="{ width: pubProgress.percent + '%' }"></div>
+                                </div>
+                            </div>
+
+                            <div class="flex justify-end gap-2 pt-2">
+                                <button @click="showWpModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded transition">Cancel</button>
+                                <button @click="publishToWp" 
+                                        :disabled="isPublishing || !selectedSiteId" 
+                                        class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded transition shadow-lg flex items-center gap-2">
+                                    <icon v-if="isPublishing" name="cloud" class="w-4 h-4 animate-bounce"></icon>
+                                    {{ isPublishing ? 'Publishing...' : 'Create Draft' }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-else class="space-y-4">
+                        <div v-for="s in savedWpSites" :key="s.id" class="flex justify-between items-center bg-slate-50 dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700">
+                            <div class="text-sm">
+                                <div class="font-bold text-slate-700 dark:text-slate-200">{{ s.name }}</div>
+                                <div class="text-xs text-slate-400">{{ s.url }}</div>
+                            </div>
+                            <button @click="deleteSite(s.id)" class="text-red-400 hover:text-red-600 p-1"><icon name="trash" class="w-4 h-4"></icon></button>
+                        </div>
+
+                        <div class="border-t border-slate-200 dark:border-slate-700 pt-4">
+                            <h4 class="text-xs font-bold text-slate-500 uppercase mb-3">Add New Site</h4>
+                            <div class="space-y-3">
+                                <input v-model="newSite.name" placeholder="Friendly Name (e.g. Personal Blog)" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-100">
+                                <input v-model="newSite.url" placeholder="https://example.com" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-100">
+                                <div class="grid grid-cols-2 gap-2">
+                                    <input v-model="newSite.user" placeholder="Username" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-100">
+                                    <input v-model="newSite.pass" type="password" placeholder="App Password" class="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-100">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-between pt-2">
+                            <button @click="wpManageMode = false" class="text-sm text-slate-500 hover:text-slate-700">Back</button>
+                            <button @click="saveSite" class="bg-green-600 hover:bg-green-500 text-white text-sm font-bold px-4 py-2 rounded shadow">Save Site</button>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
         <div v-if="showImportModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-[90] p-4 backdrop-blur-sm">
             <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700">
                 
@@ -2012,6 +2232,20 @@ class App {
                     </div>
 
                 </div>
+            </div>
+        </div>
+        <div v-if="toast.show" class="fixed bottom-6 right-6 z-[200] animate-fade-in-up cursor-pointer" @click="toast.show = false">
+            <div :class="{
+                'bg-slate-800 text-white border-slate-700': toast.type === 'info',
+                'bg-green-600 text-white border-green-500': toast.type === 'success',
+                'bg-red-600 text-white border-red-500': toast.type === 'error'
+            }" class="px-6 py-4 rounded-lg shadow-2xl flex items-center gap-3 font-bold text-sm border">
+                
+                <icon v-if="toast.type === 'success'" name="check" class="w-5 h-5 shrink-0"></icon>
+                <icon v-if="toast.type === 'error'" name="warning" class="w-5 h-5 shrink-0"></icon>
+                <icon v-if="toast.type === 'info'" name="cloud" class="w-5 h-5 shrink-0"></icon>
+                
+                <span>{{ toast.message }}</span>
             </div>
         </div>
     </div>
@@ -2143,6 +2377,118 @@ class App {
                 return `${datePrefix}_${uuid}`;
             };
 
+            // --- WordPress Manager ---
+            const showWpModal = ref(false);
+            const isPublishing = ref(false);
+            const wpManageMode = ref(false); // Toggle between "Select" and "Manage" views
+            const savedWpSites = ref(JSON.parse(localStorage.getItem('beckon_wp_sites')) || []);
+            const selectedSiteId = ref(localStorage.getItem('beckon_wp_selected') || '');
+            const newSite = ref({ name: '', url: '', user: '', pass: '' });
+            const pubProgress = ref({ current: 0, total: 0, status: '', percent: 0 });
+            const currentWpSite = computed(() => savedWpSites.value.find(s => s.id === selectedSiteId.value));
+            const saveSite = () => {
+                if (!newSite.value.name || !newSite.value.url || !newSite.value.user || !newSite.value.pass) return alert("All fields required");
+                
+                const site = { ...newSite.value, id: Date.now().toString() };
+                savedWpSites.value.push(site);
+                localStorage.setItem('beckon_wp_sites', JSON.stringify(savedWpSites.value));
+                
+                // Reset and Select
+                selectedSiteId.value = site.id;
+                localStorage.setItem('beckon_wp_selected', site.id);
+                newSite.value = { name: '', url: '', user: '', pass: '' };
+                wpManageMode.value = false;
+            };
+
+            const deleteSite = (id) => {
+                if(!confirm("Remove this site?")) return;
+                savedWpSites.value = savedWpSites.value.filter(s => s.id !== id);
+                localStorage.setItem('beckon_wp_sites', JSON.stringify(savedWpSites.value));
+                if (selectedSiteId.value === id) selectedSiteId.value = '';
+            };
+            const publishToWp = async () => {
+                const site = currentWpSite.value;
+                if (!site) return alert("Please select a site");
+
+                isPublishing.value = true;
+                pubProgress.value = { current: 0, total: 0, status: 'Preparing...', percent: 0 };
+
+                try {
+                    // 1. Render Markdown to HTML
+                    const rawHtml = md.render(activeCard.value.data.description || '');
+                    
+                    // 2. Parse HTML to find local images reliably
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(rawHtml, 'text/html');
+                    const images = Array.from(doc.querySelectorAll('img'));
+                    
+                    // Filter for local uploads
+                    const localImages = images.filter(img => img.src.includes('boards/'));
+                    
+                    pubProgress.value.total = localImages.length + 1; // +1 for final post creation
+
+                    // 3. Upload Loop
+                    for (const img of localImages) {
+                        pubProgress.value.status = `Uploading ${img.src.split('/').pop()}...`;
+                        
+                        // Extract relative path (e.g., "boards/my-board/uploads/file.png")
+                        // We grab everything after the current domain root to ensure we send a relative path
+                        const urlObj = new URL(img.src, window.location.origin);
+                        const localPath = urlObj.pathname.substring(1); // remove leading slash
+
+                        const res = await api('wp_upload', {
+                            wp_url: site.url, wp_user: site.user, wp_pass: site.pass,
+                            local_path: localPath
+                        });
+
+                        // Swap DOM attributes
+                        img.src = res.url;
+                        img.setAttribute('data-wp-id', res.id); // Tag it for the backend block converter
+                        
+                        pubProgress.value.current++;
+                        pubProgress.value.percent = (pubProgress.value.current / pubProgress.value.total) * 100;
+                    }
+
+                    // 4. Create Draft
+                    pubProgress.value.status = "Creating WordPress Draft...";
+                    const finalHtml = doc.body.innerHTML; // Serialized HTML with new URLs
+
+                    const postRes = await api('wp_post', {
+                        wp_url: site.url, wp_user: site.user, wp_pass: site.pass,
+                        title: activeCard.value.data.title,
+                        html: finalHtml
+                    });
+
+                    pubProgress.value.percent = 100;
+                    showToast("Draft Published Successfully!", "success");
+                    
+                    if (postRes.edit_link) window.open(postRes.edit_link, '_blank');
+                    showWpModal.value = false;
+
+                } catch (e) {
+                    showToast(e.message, "error");
+                } finally {
+                    isPublishing.value = false;
+                }
+            };
+            const prepareWpPublish = async (lIdx, cIdx) => {
+                const card = boardData.value.lists[lIdx].cards[cIdx];
+                
+                // 1. Set active card context (so publishToWp knows what to send)
+                activeCard.value = { listIndex: lIdx, cardIndex: cIdx, data: { ...card } };
+                
+                try {
+                    // 2. Fetch full description from server
+                    const res = await api('get_card', { id: card.id });
+                    activeCard.value.data.description = res.description;
+                    
+                    // 3. Open WP Modal
+                    showWpModal.value = true;
+                } catch(e) {
+                    showToast("Could not load card content", "error");
+                }
+            };
+
             // --- Reactive State: Core ---
             const currentUser = ref(JSON.parse(localStorage.getItem('beckon_user')) || { name: 'Guest', initials: 'G', color: 'slate' });
             const darkMode = ref(localStorage.getItem('beckon_darkMode') === 'true');
@@ -2269,6 +2615,16 @@ class App {
                 // Fallback to local
                 const local = localStorage.getItem(`beckon_${currentBoardId.value}`);
                 boardData.value = local ? JSON.parse(local) : { lists: [{ id: 'l1', title: 'Start', cards: [] }], users: [] };
+            };
+
+            // --- Toast Notification System ---
+            const toast = ref({ show: false, message: '', type: 'success' });
+            let toastTimer = null;
+
+            const showToast = (message, type = 'success') => {
+                toast.value = { show: true, message, type };
+                if (toastTimer) clearTimeout(toastTimer);
+                toastTimer = setTimeout(() => toast.value.show = false, 3000);
             };
 
 
@@ -2858,7 +3214,7 @@ class App {
                 }
             });
 
-            onMounted(async () => { 
+            onMounted(async () => {
                 await fetchBoards();
                 // Check updates
                 try {
@@ -2928,7 +3284,7 @@ class App {
                 
                 // UI Controls
                 isModalOpen, isSidebarOpen, isActivityOpen, isActivityMaximized, activityTab,
-                showBoardSelector, isBoardSwitcherOpen, showCreateBoardModal, showRenameModal, 
+                showBoardSelector, isBoardSwitcherOpen, showCreateBoardModal, showRenameModal, toast, showToast,
                 showImportModal, showCoverModalState, showMoveModalState, isArchiveOpen, isUsersModalOpen,
                 
                 // Search & Filters
@@ -2938,6 +3294,8 @@ class App {
                 // Card Editor Data
                 activeCard, activeCardMeta, editorStats, compiledMarkdown, originalDescription, revisionIndex, destinationBoardLists,
                 splitPaneRatio, splitPaneContainer, isDraggingFile, hasUnsavedChanges, manualSaveRevision,
+                showWpModal, wpManageMode, savedWpSites, selectedSiteId, newSite, currentWpSite, pubProgress, isPublishing,
+                saveSite, deleteSite, publishToWp, prepareWpPublish, openWpModal: () => showWpModal.value = true,
                 
                 // Forms
                 newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText, moveDestination,
