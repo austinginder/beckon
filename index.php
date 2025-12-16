@@ -1352,8 +1352,19 @@ class App {
                     </div>
                     
                     <div class="flex items-center gap-2">
+
+                        <div class="relative group">
+                            <div v-if="hasUnsavedChanges" class="animate-fade-in mr-2">
+                                <button @click="manualSaveRevision" 
+                                        class="text-xs bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 font-bold px-3 py-1.5 rounded transition flex items-center gap-2">
+                                    <icon name="check" class="w-3 h-3"></icon>
+                                    Save Revision
+                                </button>
+                            </div>
+                        </div>
                         
                         <div class="relative group">
+                            
                             <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
                                 <icon v-if="splitPaneRatio === 100" name="pencil" class="h-6 w-6"></icon>
                                 <icon v-else-if="splitPaneRatio === 0" name="eye" class="h-6 w-6"></icon>
@@ -2547,6 +2558,43 @@ class App {
                 persistCardDesc(activeCard.value.data); 
             };
 
+            const hasUnsavedChanges = computed(() => {
+                // Returns true if current description differs from what was loaded/last checkpoint
+                return activeCard.value.data.description !== originalDescription.value;
+            });
+
+            const manualSaveRevision = () => {
+                // 1. Create Revision Object
+                const newRev = { 
+                    id: generateId(), 
+                    date: new Date().toISOString(), 
+                    text: activeCard.value.data.description, 
+                    user: currentUser.value.name 
+                };
+
+                // 2. Add to History
+                activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
+                activeCardMeta.value.revisions.unshift(newRev);
+                
+                // Limit to 50
+                if (activeCardMeta.value.revisions.length > 50) {
+                    activeCardMeta.value.revisions = activeCardMeta.value.revisions.slice(0, 50);
+                }
+
+                // 3. Log Activity
+                activeCardMeta.value.activity.unshift({ 
+                    text: 'Saved revision manually', 
+                    date: new Date().toISOString() 
+                });
+
+                // 4. Save to Backend
+                persistMeta(activeCard.value.data.id, activeCardMeta.value);
+
+                // 5. Update "original" baseline so the button disappears and 
+                //    closing the modal doesn't create a duplicate revision.
+                originalDescription.value = activeCard.value.data.description;
+            };
+
 
             // ====================================================================================
             // 5. CHECKLISTS, COMMENTS, & ATTACHMENTS
@@ -2889,7 +2937,7 @@ class App {
                 
                 // Card Editor Data
                 activeCard, activeCardMeta, editorStats, compiledMarkdown, originalDescription, revisionIndex, destinationBoardLists,
-                splitPaneRatio, splitPaneContainer, isDraggingFile,
+                splitPaneRatio, splitPaneContainer, isDraggingFile, hasUnsavedChanges, manualSaveRevision,
                 
                 // Forms
                 newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText, moveDestination,
