@@ -1042,7 +1042,7 @@ class App {
         
         .tribute-container li span { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; margin-right: 0.5rem; }
     </style>
-    <link rel="icon" href="beckon-icon.webp">
+    <link rel="icon" href="https://raw.githubusercontent.com/austinginder/beckon/refs/heads/main/beckon-icon.webp">
 </head>
 <body class="bg-slate-900 h-screen overflow-hidden text-slate-800 font-sans">
     <div id="app" class="h-full flex flex-col" :class="{ 'dark': darkMode }">
