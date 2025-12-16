@@ -491,7 +491,8 @@ class App {
         $postData = [
             'title' => $input['title'],
             'content' => $html,
-            'status' => 'draft'
+            'status' => 'draft',
+            'featured_media' => $input['featured_media'] ?? null
         ];
 
         $ch = curl_init($url);
@@ -2414,49 +2415,78 @@ class App {
                 pubProgress.value = { current: 0, total: 0, status: 'Preparing...', percent: 0 };
 
                 try {
-                    // 1. Render Markdown to HTML
+                    // 1. Render Markdown to HTML and Parse
                     const rawHtml = md.render(activeCard.value.data.description || '');
-                    
-                    // 2. Parse HTML to find local images reliably
                     const parser = new DOMParser();
                     const doc = parser.parseFromString(rawHtml, 'text/html');
                     const images = Array.from(doc.querySelectorAll('img'));
                     
-                    // Filter for local uploads
+                    // Filter for local images only
                     const localImages = images.filter(img => img.src.includes('boards/'));
-                    
-                    pubProgress.value.total = localImages.length + 1; // +1 for final post creation
 
-                    // 3. Upload Loop
-                    for (const img of localImages) {
-                        pubProgress.value.status = `Uploading ${img.src.split('/').pop()}...`;
-                        
-                        // Extract relative path (e.g., "boards/my-board/uploads/file.png")
-                        // We grab everything after the current domain root to ensure we send a relative path
+                    // 2. Calculate Uniques for Progress Bar
+                    const uniquePaths = new Set(localImages.map(img => {
                         const urlObj = new URL(img.src, window.location.origin);
-                        const localPath = urlObj.pathname.substring(1); // remove leading slash
+                        return urlObj.pathname.substring(1);
+                    }));
+                    
+                    const coverImage = activeCard.value.data.coverImage;
+                    // Only add cover to count if it exists and isn't already in the content list
+                    if (coverImage && coverImage.startsWith('boards/')) uniquePaths.add(coverImage);
+                    
+                    pubProgress.value.total = uniquePaths.size + 1; // +1 for the final post creation step
 
+                    // 3. Upload Deduplication Map (Path -> {id, url})
+                    const uploadMap = {}; 
+
+                    // Helper: Uploads if not cached, returns data object
+                    const getUploadedData = async (localPath) => {
+                        if (uploadMap[localPath]) return uploadMap[localPath];
+
+                        pubProgress.value.status = `Uploading ${localPath.split('/').pop()}...`;
                         const res = await api('wp_upload', {
                             wp_url: site.url, wp_user: site.user, wp_pass: site.pass,
                             local_path: localPath
                         });
-
-                        // Swap DOM attributes
-                        img.src = res.url;
-                        img.setAttribute('data-wp-id', res.id); // Tag it for the backend block converter
+                        
+                        const data = { id: res.id, url: res.url };
+                        uploadMap[localPath] = data;
                         
                         pubProgress.value.current++;
                         pubProgress.value.percent = (pubProgress.value.current / pubProgress.value.total) * 100;
+                        return data;
+                    };
+
+                    // 4. Process Content Images
+                    for (const img of localImages) {
+                        const urlObj = new URL(img.src, window.location.origin);
+                        const localPath = urlObj.pathname.substring(1);
+
+                        // Upload or retrieve from cache
+                        const data = await getUploadedData(localPath);
+
+                        // Update DOM with new WP URL and ID
+                        img.src = data.url;
+                        img.setAttribute('data-wp-id', data.id);
                     }
 
-                    // 4. Create Draft
+                    // 5. Process Featured Image (Smart Dedupe)
+                    let featuredMediaId = null;
+                    if (coverImage && coverImage.startsWith('boards/')) {
+                        // If cover was in content, this returns cached ID immediately without re-uploading
+                        const data = await getUploadedData(coverImage);
+                        featuredMediaId = data.id;
+                    }
+
+                    // 6. Create Draft
                     pubProgress.value.status = "Creating WordPress Draft...";
-                    const finalHtml = doc.body.innerHTML; // Serialized HTML with new URLs
+                    const finalHtml = doc.body.innerHTML;
 
                     const postRes = await api('wp_post', {
                         wp_url: site.url, wp_user: site.user, wp_pass: site.pass,
                         title: activeCard.value.data.title,
-                        html: finalHtml
+                        html: finalHtml,
+                        featured_media: featuredMediaId
                     });
 
                     pubProgress.value.percent = 100;
@@ -3513,7 +3543,7 @@ class App {
                 },
 
                 // Methods: Context Menu & Covers
-                contextMenu, 
+                contextMenu, availableCovers,
                 showContextMenu: (e, l, c) => { contextMenu.value = { show: true, x: Math.min(e.clientX, window.innerWidth-200), y: Math.min(e.clientY, window.innerHeight-200), lIdx: l, cIdx: c }; },
                 closeContextMenu: () => contextMenu.value.show = false,
                 deleteCardContext: (l, c) => { 
