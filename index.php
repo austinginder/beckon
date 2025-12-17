@@ -8,7 +8,6 @@ use Exception;
 use RecursiveIteratorIterator;
 use RecursiveDirectoryIterator;
 
-// Configuration
 define('BECKON_VERSION', '1.0.0');
 
 class App {
@@ -1560,7 +1559,11 @@ class App {
                                     <span>PREVIEW</span>
                                     <span v-if="revisionIndex > -1" class="text-blue-500">PREVIEWING HISTORY</span>
                                 </div>
-                                <div class="flex-1 p-4 overflow-y-auto markdown-body bg-slate-50 dark:bg-slate-900 transition-colors w-full" v-html="compiledMarkdown" @click="handlePreviewClick"></div>
+                                <div class="flex-1 p-4 overflow-y-auto markdown-body bg-slate-50 dark:bg-slate-900 transition-colors w-full" 
+                                    v-html="compiledMarkdown" 
+                                    @click="handleCheckboxClick"
+                                    @mouseup="handleSyncCursor"
+                                    @keyup="handleSyncCursor"></div>
                             </div>
                         </div>
 
@@ -2432,6 +2435,117 @@ class App {
                 const datePrefix = dayjs().format('YYYY-MM-DD');
                 return `${datePrefix}_${uuid}`;
             };
+
+            const mapDomPositionToRawOffset = (node, offset) => {
+                // 1. Find the closest block with a line number
+                let block = node.nodeType === 1 ? node : node.parentElement;
+                const dataLineBlock = block.closest('[data-line]');
+                if (!dataLineBlock) return null;
+
+                const lineIndex = parseInt(dataLineBlock.getAttribute('data-line'), 10);
+                if (isNaN(lineIndex)) return null;
+
+                // 2. Get the text content of the block UP TO the cursor
+                const range = document.createRange();
+                range.selectNodeContents(dataLineBlock);
+                range.setEnd(node, offset);
+                const preCaretText = range.toString();
+
+                // 3. Prepare Raw Text (Now this works because activeCard is in scope!)
+                const text = activeCard.value.data.description || '';
+                const lines = text.split('\n');
+
+                // 4. Calculate Vertical Offset
+                const isCodeBlock = dataLineBlock.tagName === 'PRE' || dataLineBlock.tagName === 'CODE';
+                const visualLines = preCaretText.split('\n');
+                const internalLineOffset = visualLines.length - 1;
+                
+                // 5. Calculate Horizontal Column
+                const visualCol = visualLines[visualLines.length - 1].length;
+
+                // 6. Determine Exact Raw Line Index
+                let finalLineIndex = lineIndex + (isCodeBlock ? 1 : 0) + internalLineOffset;
+                if (finalLineIndex >= lines.length) finalLineIndex = lines.length - 1;
+
+                const rawLine = lines[finalLineIndex] || '';
+
+                // 7. Map Column (Fuzzy Match)
+                let sourceCol = 0;
+                if (isCodeBlock) {
+                    sourceCol = Math.min(visualCol, rawLine.length);
+                } else {
+                    const renderedTextLine = visualLines[internalLineOffset];
+                    let matchIndex = 0;
+                    
+                    for (let i = 0; i < rawLine.length && matchIndex < visualCol; i++) {
+                        const char = rawLine[i];
+                        if (['*','_','`','[',']','(',')','#','>','-','+','!'].includes(char)) {
+                            sourceCol++;
+                            continue;
+                        }
+                        if (char === renderedTextLine[matchIndex]) {
+                            matchIndex++;
+                        }
+                        sourceCol++;
+                    }
+                }
+
+                // 8. Calculate Global Offset
+                let globalOffset = 0;
+                for (let i = 0; i < finalLineIndex; i++) {
+                    globalOffset += lines[i].length + 1; 
+                }
+                return globalOffset + sourceCol;
+            };
+
+            const handleSyncCursor = (e) => {
+            // 1. Ignore if user clicked a checkbox (let handleCheckboxClick handle it)
+            if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') return;
+
+            // 2. Get Selection
+            const sel = window.getSelection();
+            const previewEl = document.querySelector('.markdown-body');
+            if (!previewEl || !sel.anchorNode) return; // Guard clause
+
+            // 3. Map Start and End
+            // If it's a click, start/end are the same. If highlight, they differ.
+            const startOffset = mapDomPositionToRawOffset(sel.anchorNode, sel.anchorOffset);
+            const endOffset = mapDomPositionToRawOffset(sel.focusNode, sel.focusOffset);
+
+            if (startOffset !== null && endOffset !== null) {
+                const textarea = document.getElementById('editor-textarea');
+                if (textarea) {
+                    const start = Math.min(startOffset, endOffset);
+                    const end = Math.max(startOffset, endOffset);
+                    
+                    // Force focus so the highlight is visible
+                    textarea.focus();
+                    textarea.setSelectionRange(start, end);
+                    
+                    // Only scroll if it's a single click (dragging usually implies you see what you want)
+                    if (start === end) {
+                        scrollToCursor(textarea, start);
+                    }
+                }
+            }
+        };
+
+        // --- NEW: Interactive elements only (Checkboxes) ---
+        const handleCheckboxClick = (e) => {
+            if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
+                const all = Array.from(document.querySelectorAll('.markdown-body input[type="checkbox"]'));
+                const idx = all.indexOf(e.target);
+                
+                // Toggle the [ ] to [x] in the markdown string
+                let c = 0; 
+                activeCard.value.data.description = activeCard.value.data.description.replace(
+                    /^(\s*[-*]\s\[)([ xX])(\])/gm, 
+                    (m, p, s, sf) => c++ === idx ? p + (s === ' ' ? 'x' : ' ') + sf : m
+                );
+                
+                debouncedSaveCard();
+            }
+        };
 
             // --- WordPress Manager ---
             const showWpModal = ref(false);
@@ -3380,7 +3494,7 @@ class App {
                 activeCard, activeCardMeta, editorStats, compiledMarkdown, originalDescription, revisionIndex, destinationBoardLists,
                 splitPaneRatio, splitPaneContainer, isDraggingFile, hasUnsavedChanges, manualSaveRevision,
                 showWpModal, wpManageMode, savedWpSites, selectedSiteId, newSite, currentWpSite, pubProgress, isPublishing,
-                saveSite, deleteSite, publishToWp, prepareWpPublish, openWpModal: () => showWpModal.value = true,
+                saveSite, deleteSite, publishToWp, prepareWpPublish, openWpModal: () => showWpModal.value = true, handleSyncCursor, handleCheckboxClick,
                 
                 // Forms
                 newBoardTitle, tempBoardTitle, newComment, editingCommentId, editCommentText, moveDestination,
@@ -3657,160 +3771,6 @@ class App {
                         splitPaneRatio.value = Math.max(0, Math.min(100, nr)); 
                     };
                     window.addEventListener('mousemove', move); window.addEventListener('mouseup', stop);
-                },
-                handlePreviewClick: (e) => {
-                    if (revisionIndex.value > -1) return;
-
-                    // 1. Checkbox Logic
-                    if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
-                        const all = Array.from(document.querySelectorAll('.markdown-body input[type="checkbox"]'));
-                        let c = 0; const idx = all.indexOf(e.target);
-                        activeCard.value.data.description = activeCard.value.data.description.replace(/^(\s*[-*]\s\[)([ xX])(\])/gm, (m,p,s,sf) => c++ === idx ? p + (s === ' ' ? 'x' : ' ') + sf : m);
-                        persistCardDesc(activeCard.value.data);
-                        return;
-                    }
-
-                    // 2. Advanced Sync Logic
-                    if (splitPaneRatio.value > 0) {
-                        // First, try to find the nearest block with data-line
-                        let block = e.target.closest('[data-line]');
-                        
-                        // If no block found (clicked in whitespace), find the closest block
-                        if (!block) {
-                            const rect = e.target.getBoundingClientRect();
-                            const clickY = e.clientY;
-                            
-                            // Get all blocks with line numbers
-                            const blocks = Array.from(document.querySelectorAll('[data-line]'));
-                            
-                            // Find the block closest to the click
-                            let closestBlock = null;
-                            let minDistance = Infinity;
-                            
-                            blocks.forEach(b => {
-                                const blockRect = b.getBoundingClientRect();
-                                const distance = Math.abs(blockRect.top - clickY);
-                                
-                                if (distance < minDistance) {
-                                    minDistance = distance;
-                                    closestBlock = b;
-                                }
-                            });
-                            
-                            if (closestBlock) {
-                                block = closestBlock;
-                                // If click was below the block, we'll handle this by going to end of block
-                                if (clickY > closestBlock.getBoundingClientRect().bottom) {
-                                    // This will be handled in column mapping
-                                }
-                            } else {
-                                return; // No blocks found at all
-                            }
-                        }
-                        
-                        if (!block) return;
-
-                        let lineIndex = parseInt(block.getAttribute('data-line'), 10);
-                        if (isNaN(lineIndex)) return;
-
-                        const textarea = document.getElementById('editor-textarea');
-                        const text = activeCard.value.data.description || '';
-                        const lines = text.split('\n');
-
-                        // A. Detect Code Block (check both CODE and PRE tags)
-                        const isCodeElement = block.tagName === 'CODE';
-                        const isPreElement = block.tagName === 'PRE';
-                        const isCodeBlock = isCodeElement || isPreElement;
-
-                        // B. Get Click Position Within Block
-                        const selection = window.getSelection();
-                        let clickedText = '';
-                        let internalLineOffset = 0;
-                        let columnOffset = 0;
-
-                        if (selection.rangeCount > 0) {
-                            const range = selection.getRangeAt(0);
-                            
-                            const preCaretRange = range.cloneRange();
-                            preCaretRange.selectNodeContents(block);
-                            preCaretRange.setEnd(range.endContainer, range.endOffset);
-                            
-                            clickedText = preCaretRange.toString();
-                            const clickLines = clickedText.split('\n');
-                            internalLineOffset = clickLines.length - 1;
-                            columnOffset = clickLines[clickLines.length - 1].length;
-                        }
-
-                        // C. Calculate Source Line Index
-                        let finalLineIndex;
-                        if (isCodeBlock) {
-                            // data-line points to the fence (```), so first content line is +1
-                            // Then add the internal offset from the click position
-                            finalLineIndex = lineIndex + 1 + internalLineOffset;
-                        } else {
-                            // Regular blocks: lineIndex is the first line of content
-                            finalLineIndex = lineIndex + internalLineOffset;
-                        }
-
-                        // D. Safety Check
-                        if (finalLineIndex >= lines.length) {
-                            finalLineIndex = lines.length - 1;
-                            columnOffset = lines[finalLineIndex].length;
-                        }
-
-                        const rawLine = lines[finalLineIndex] || '';
-
-                        // E. Column Mapping
-                        let sourceCol;
-                        if (isCodeBlock) {
-                            // Code blocks: direct 1:1 mapping
-                            sourceCol = Math.min(columnOffset, rawLine.length);
-                        } else {
-                            // Markdown: fuzzy match accounting for stripped formatting
-                            const renderedText = clickedText.split('\n')[internalLineOffset] || '';
-                            
-                            // Handle empty lines
-                            if (rawLine.trim() === '') {
-                                sourceCol = 0;
-                            } else if (renderedText.trim() === '') {
-                                sourceCol = 0;
-                            } else {
-                                // Match characters, accounting for stripped markdown
-                                let matchIndex = 0;
-                                sourceCol = 0;
-                                
-                                for (let i = 0; i < rawLine.length && matchIndex < columnOffset; i++) {
-                                    const char = rawLine[i];
-                                    // Skip markdown characters that don't appear in render
-                                    if (char === '*' || char === '_' || char === '`' || char === '[' || char === ']') {
-                                        sourceCol++;
-                                        continue;
-                                    }
-                                    if (char === renderedText[matchIndex]) {
-                                        matchIndex++;
-                                    }
-                                    sourceCol++;
-                                }
-                                
-                                // If we didn't match all characters, we're at EOL
-                                if (matchIndex < columnOffset) {
-                                    sourceCol = rawLine.length;
-                                }
-                            }
-                        }
-
-                        // F. Calculate Global Offset
-                        let globalOffset = 0;
-                        for (let i = 0; i < finalLineIndex; i++) {
-                            globalOffset += lines[i].length + 1; // +1 for newline
-                        }
-                        globalOffset += sourceCol;
-
-                        // G. Move Cursor & Scroll
-                        textarea.focus();
-                        textarea.setSelectionRange(globalOffset, globalOffset);
-                        scrollToCursor(textarea, globalOffset);
-                    }
                 },
 
                 // Methods: Import (Trello)
