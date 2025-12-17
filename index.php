@@ -2077,16 +2077,41 @@ class App {
                         <icon name="close" class="w-5 h-5"></icon>
                     </button>
                 </div>
-                <div class="flex-1 overflow-y-auto p-4 bg-slate-100 dark:bg-slate-900/50">
-                    <div v-if="availableCovers.length === 0" class="text-center text-slate-500 py-10">
-                        No images found in uploads.
+                <div class="flex-1 overflow-y-auto p-4 bg-slate-100 dark:bg-slate-900/50 relative"
+                    @dragover.prevent="isDraggingCover = true"
+                    @dragleave.prevent="isDraggingCover = false"
+                    @drop.prevent="handleCoverDrop">
+
+                    <div v-if="isDraggingCover" class="absolute inset-0 z-50 bg-blue-500/20 backdrop-blur-sm flex items-center justify-center border-4 border-blue-500 border-dashed m-2 rounded-lg pointer-events-none animate-fade-in">
+                        <div class="bg-white dark:bg-slate-800 p-4 rounded shadow-xl font-bold text-blue-600 flex items-center gap-2">
+                            <icon name="cloud" class="w-6 h-6"></icon> Drop to Upload
+                        </div>
                     </div>
+
+                    <label class="cursor-pointer mb-4 block border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-4 text-center hover:bg-white dark:hover:bg-slate-800 hover:border-blue-400 dark:hover:border-blue-500 transition group relative">
+                        <input type="file" class="hidden" accept="image/*" @change="handleCoverFileSelect">
+                        <div class="flex flex-col items-center justify-center gap-2">
+                            <icon name="image" class="w-8 h-8 text-slate-300 group-hover:text-blue-500 transition"></icon>
+                            <span class="text-xs font-bold text-slate-500 group-hover:text-slate-700 dark:group-hover:text-slate-300">
+                                Click to upload or drag image here
+                            </span>
+                        </div>
+                    </label>
+
+                    <div v-if="availableCovers.length === 0" class="text-center text-slate-500 py-4 text-sm italic">
+                        No other images found.
+                    </div>
+
                     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                         <div v-for="img in availableCovers" :key="img" 
-                             @click="setCover(img)"
-                             class="aspect-square rounded-lg border-2 border-transparent hover:border-blue-500 cursor-pointer overflow-hidden relative group bg-slate-200 dark:bg-slate-700">
-                             <img :src="img" class="w-full h-full object-cover">
-                             <div class="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition"></div>
+                            @click="setCover(img)"
+                            class="aspect-square rounded-lg border-2 border-transparent hover:border-blue-500 cursor-pointer overflow-hidden relative group bg-slate-200 dark:bg-slate-700 transition shadow-sm hover:shadow-md">
+                            <img :src="img" class="w-full h-full object-cover">
+                            <div class="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition"></div>
+                            <div v-if="boardData.lists[activeCoverTarget.lIdx]?.cards[activeCoverTarget.cIdx]?.coverImage === img" 
+                                class="absolute top-2 right-2 bg-green-500 text-white rounded-full p-1 shadow-lg">
+                                <icon name="check" class="w-3 h-3"></icon>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2530,7 +2555,7 @@ class App {
             }
         };
 
-        // --- NEW: Interactive elements only (Checkboxes) ---
+        // --- Interactive elements only (Checkboxes) ---
         const handleCheckboxClick = (e) => {
             if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
                 const all = Array.from(document.querySelectorAll('.markdown-body input[type="checkbox"]'));
@@ -2739,6 +2764,7 @@ class App {
             const destinationBoardLists = ref([]);
             const moveContext = ref({ lIdx: null, cIdx: null });
             const moveDestination = ref({ boardId: '', listId: null });
+            const isDraggingCover = ref(false);
 
             // --- Reactive State: Active Card Context ---
             const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
@@ -3203,6 +3229,38 @@ class App {
                     });
             };
 
+            const uploadAndRefreshCovers = async (file) => {
+                if (!file || !file.type.startsWith('image/')) return;
+                
+                // Upload logic
+                const fd = new FormData(); 
+                fd.append('file', file);
+                
+                try {
+                    const res = await (await fetch(`?action=upload&board=${currentBoardId.value}`, {method:'POST', body:fd})).json();
+                    
+                    if(res.url) {
+                        // Add new image to the top of the list
+                        availableCovers.value.unshift(res.url);
+                        // Optional: Automatically set it as the cover immediately?
+                        // setCover(res.url); 
+                    }
+                } catch(e) {
+                    alert("Upload failed: " + e.message);
+                }
+            };
+
+            const handleCoverDrop = async (e) => {
+                isDraggingCover.value = false;
+                const file = e.dataTransfer.files[0];
+                await uploadAndRefreshCovers(file);
+            };
+
+            const handleCoverFileSelect = async (e) => {
+                const file = e.target.files[0];
+                await uploadAndRefreshCovers(file);
+            };
+
 
             // ====================================================================================
             // 6. DRAG & DROP
@@ -3485,6 +3543,7 @@ class App {
                 isModalOpen, isSidebarOpen, isActivityOpen, isActivityMaximized, activityTab,
                 showBoardSelector, isBoardSwitcherOpen, showCreateBoardModal, showRenameModal, toast, showToast,
                 showImportModal, showCoverModalState, showMoveModalState, isArchiveOpen, isUsersModalOpen,
+                isDraggingCover, handleCoverDrop, handleCoverFileSelect, activeCoverTarget,
                 
                 // Search & Filters
                 boardSearch, boardSearchInput, filteredBoards, 
@@ -3509,12 +3568,10 @@ class App {
                             const t = new Tribute({
                                 trigger: '', 
                                 
-                                // --- FIX START ---
                                 // 1. Treat the entire input as the search value
                                 autocompleteMode: true,
                                 // 2. Allow triggering at the very start of the input (index 0)
                                 requireLeadingSpace: false,
-                                // --- FIX END ---
                                 
                                 values: (text, cb) => { 
                                     const term = text.toLowerCase(); 
