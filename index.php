@@ -1074,8 +1074,7 @@ class App {
 
 // Instantiate and run
 (new App())->run();
-?>
-<!DOCTYPE html>
+?><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1096,7 +1095,7 @@ class App {
         .scrolling-wrapper::-webkit-scrollbar-track { background: #1e293b; }
         .scrolling-wrapper::-webkit-scrollbar-thumb { background: #475569; border-radius: 6px; }
         /* Markdown Compact */
-        .markdown-body { line-height: 1.6; color: #333; font-size: 14px; }
+        .markdown-body { line-height: 1.6; color: #333; font-size: 14px; cursor: text; }
         .dark .markdown-body { color: #e2e8f0; }
         .dark .markdown-body h1, .dark .markdown-body h2 { border-bottom-color: #334155; }
         .dark .markdown-body a { color: #60a5fa; }
@@ -2303,14 +2302,70 @@ class App {
         })]
     );
 
+    const scrollToCursor = (textarea, cursorIndex) => {
+        const div = document.createElement('div');
+        const style = getComputedStyle(textarea);
+        
+        // Copy critical styles that affect layout
+        ['font-family','font-size','font-weight','line-height','text-transform',
+        'letter-spacing','width','padding','border','box-sizing','white-space',
+        'word-wrap','word-break'].forEach(k => {
+            div.style[k] = style[k];
+        });
+        
+        // Hide it off-screen
+        div.style.position = 'absolute';
+        div.style.top = '-9999px';
+        div.style.left = '-9999px';
+        div.style.height = 'auto';
+        div.style.overflow = 'hidden';
+        
+        // Replicate text up to the cursor
+        const textUpToCursor = textarea.value.substring(0, cursorIndex);
+        div.textContent = textUpToCursor;
+        
+        // Add a marker span to get the exact offset
+        const span = document.createElement('span');
+        span.textContent = '|';
+        div.appendChild(span);
+        
+        document.body.appendChild(div);
+        // Measure top position + padding
+        const top = span.offsetTop + parseInt(style.paddingTop || 0);
+        document.body.removeChild(div);
+        
+        // Scroll the real textarea to center this position
+        const viewHeight = textarea.clientHeight;
+        textarea.scrollTo({ top: Math.max(0, top - viewHeight / 2), behavior: 'smooth' });
+    };
+
     createApp({
         setup() {
             // --- Configuration & Constants ---
-            const md = window.markdownit({
-                html: true,        // Enable HTML tags in source
-                breaks: true,      // Convert '\n' in paragraphs to <br>
-                linkify: true      // Autoconvert URL-like text to links
-            }).use(window.markdownitEmoji);
+            const md = window.markdownit({ html: true, breaks: true, linkify: true }).use(window.markdownitEmoji);
+
+            // --- Source Map Injection ---
+            const proxyRenderer = (ruleName) => {
+                // 1. Save the existing rule (or fallback to basic renderer)
+                const defaultRule = md.renderer.rules[ruleName] || 
+                    function(tokens, idx, options, env, self) {
+                        return self.renderToken(tokens, idx, options, env, self);
+                    };
+                
+                // 2. Overwrite with a wrapper
+                md.renderer.rules[ruleName] = (tokens, idx, options, env, self) => {
+                    // Inject the line number into the token's attributes
+                    if (tokens[idx].map) {
+                        tokens[idx].attrJoin('data-line', tokens[idx].map[0]);
+                    }
+                    // 3. Call the original rule! 
+                    // It will render normally but include our new 'data-line' attribute.
+                    return defaultRule(tokens, idx, options, env, self);
+                };
+            };
+
+            // Apply to block-level elements
+            ['paragraph_open', 'heading_open', 'list_item_open', 'blockquote_open', 'table_open', 'fence', 'code_block'].forEach(proxyRenderer);
             const emojiData = ref([]);
             fetch('https://raw.githubusercontent.com/github/gemoji/master/db/emoji.json')
                 .then(r => r.json())
@@ -3605,11 +3660,156 @@ class App {
                 },
                 handlePreviewClick: (e) => {
                     if (revisionIndex.value > -1) return;
+
+                    // 1. Checkbox Logic
                     if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
                         const all = Array.from(document.querySelectorAll('.markdown-body input[type="checkbox"]'));
                         let c = 0; const idx = all.indexOf(e.target);
                         activeCard.value.data.description = activeCard.value.data.description.replace(/^(\s*[-*]\s\[)([ xX])(\])/gm, (m,p,s,sf) => c++ === idx ? p + (s === ' ' ? 'x' : ' ') + sf : m);
                         persistCardDesc(activeCard.value.data);
+                        return;
+                    }
+
+                    // 2. Advanced Sync Logic
+                    if (splitPaneRatio.value > 0) {
+                        // First, try to find the nearest block with data-line
+                        let block = e.target.closest('[data-line]');
+                        
+                        // If no block found (clicked in whitespace), find the closest block
+                        if (!block) {
+                            const rect = e.target.getBoundingClientRect();
+                            const clickY = e.clientY;
+                            
+                            // Get all blocks with line numbers
+                            const blocks = Array.from(document.querySelectorAll('[data-line]'));
+                            
+                            // Find the block closest to the click
+                            let closestBlock = null;
+                            let minDistance = Infinity;
+                            
+                            blocks.forEach(b => {
+                                const blockRect = b.getBoundingClientRect();
+                                const distance = Math.abs(blockRect.top - clickY);
+                                
+                                if (distance < minDistance) {
+                                    minDistance = distance;
+                                    closestBlock = b;
+                                }
+                            });
+                            
+                            if (closestBlock) {
+                                block = closestBlock;
+                                // If click was below the block, we'll handle this by going to end of block
+                                if (clickY > closestBlock.getBoundingClientRect().bottom) {
+                                    // This will be handled in column mapping
+                                }
+                            } else {
+                                return; // No blocks found at all
+                            }
+                        }
+                        
+                        if (!block) return;
+
+                        let lineIndex = parseInt(block.getAttribute('data-line'), 10);
+                        if (isNaN(lineIndex)) return;
+
+                        const textarea = document.getElementById('editor-textarea');
+                        const text = activeCard.value.data.description || '';
+                        const lines = text.split('\n');
+
+                        // A. Detect Code Block (check both CODE and PRE tags)
+                        const isCodeElement = block.tagName === 'CODE';
+                        const isPreElement = block.tagName === 'PRE';
+                        const isCodeBlock = isCodeElement || isPreElement;
+
+                        // B. Get Click Position Within Block
+                        const selection = window.getSelection();
+                        let clickedText = '';
+                        let internalLineOffset = 0;
+                        let columnOffset = 0;
+
+                        if (selection.rangeCount > 0) {
+                            const range = selection.getRangeAt(0);
+                            
+                            const preCaretRange = range.cloneRange();
+                            preCaretRange.selectNodeContents(block);
+                            preCaretRange.setEnd(range.endContainer, range.endOffset);
+                            
+                            clickedText = preCaretRange.toString();
+                            const clickLines = clickedText.split('\n');
+                            internalLineOffset = clickLines.length - 1;
+                            columnOffset = clickLines[clickLines.length - 1].length;
+                        }
+
+                        // C. Calculate Source Line Index
+                        let finalLineIndex;
+                        if (isCodeBlock) {
+                            // data-line points to the fence (```), so first content line is +1
+                            // Then add the internal offset from the click position
+                            finalLineIndex = lineIndex + 1 + internalLineOffset;
+                        } else {
+                            // Regular blocks: lineIndex is the first line of content
+                            finalLineIndex = lineIndex + internalLineOffset;
+                        }
+
+                        // D. Safety Check
+                        if (finalLineIndex >= lines.length) {
+                            finalLineIndex = lines.length - 1;
+                            columnOffset = lines[finalLineIndex].length;
+                        }
+
+                        const rawLine = lines[finalLineIndex] || '';
+
+                        // E. Column Mapping
+                        let sourceCol;
+                        if (isCodeBlock) {
+                            // Code blocks: direct 1:1 mapping
+                            sourceCol = Math.min(columnOffset, rawLine.length);
+                        } else {
+                            // Markdown: fuzzy match accounting for stripped formatting
+                            const renderedText = clickedText.split('\n')[internalLineOffset] || '';
+                            
+                            // Handle empty lines
+                            if (rawLine.trim() === '') {
+                                sourceCol = 0;
+                            } else if (renderedText.trim() === '') {
+                                sourceCol = 0;
+                            } else {
+                                // Match characters, accounting for stripped markdown
+                                let matchIndex = 0;
+                                sourceCol = 0;
+                                
+                                for (let i = 0; i < rawLine.length && matchIndex < columnOffset; i++) {
+                                    const char = rawLine[i];
+                                    // Skip markdown characters that don't appear in render
+                                    if (char === '*' || char === '_' || char === '`' || char === '[' || char === ']') {
+                                        sourceCol++;
+                                        continue;
+                                    }
+                                    if (char === renderedText[matchIndex]) {
+                                        matchIndex++;
+                                    }
+                                    sourceCol++;
+                                }
+                                
+                                // If we didn't match all characters, we're at EOL
+                                if (matchIndex < columnOffset) {
+                                    sourceCol = rawLine.length;
+                                }
+                            }
+                        }
+
+                        // F. Calculate Global Offset
+                        let globalOffset = 0;
+                        for (let i = 0; i < finalLineIndex; i++) {
+                            globalOffset += lines[i].length + 1; // +1 for newline
+                        }
+                        globalOffset += sourceCol;
+
+                        // G. Move Cursor & Scroll
+                        textarea.focus();
+                        textarea.setSelectionRange(globalOffset, globalOffset);
+                        scrollToCursor(textarea, globalOffset);
                     }
                 },
 
