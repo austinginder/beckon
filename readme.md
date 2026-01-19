@@ -57,8 +57,6 @@ git clone https://github.com/austinginder/beckon.git .
 
 Then open https://beckon.localhost in your browser.
 
-Here is a section you can add to your `README.md`. It highlights the architectural differences and feature gaps, using the provided Trello export and source code to verify specific limitations (like the handling of `customFields` and the local-only nature of the user system).
-
 ## ⚠️ Beckon vs. Trello: Feature Parity & Limitations
 
 Beckon is designed as a **local-first, markdown-centric** Kanban tool. It is not a 1:1 clone of Trello's cloud SaaS architecture. While it preserves the "spirit" of your boards, there are fundamental differences in how it handles users, data, and interactivity.
