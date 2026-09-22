@@ -120,6 +120,11 @@
         .sbtn { height: 28px; padding: 0 10px; border-radius: 7px; background: var(--accent); color: #fff; border: 0; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
         .xbtn { width: 26px; height: 26px; border-radius: 6px; border: 0; background: none; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
         .xbtn:hover { background: var(--surface-3); color: var(--text); }
+        .ctx { position: fixed; z-index: 70; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; width: 190px; }
+        .ctx button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px; border-radius: 7px; border: 0; background: none; text-align: left; font: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
+        .ctx button svg { color: var(--muted); } .ctx button:hover { background: var(--surface-3); }
+        .ctx button.danger { color: var(--danger); } .ctx button.danger svg { color: var(--danger); } .ctx button.danger:hover { background: var(--danger-soft); }
+        .ctx .sep { height: 1px; background: var(--line); margin: 4px 0; }
         .mb-hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); padding: 5px 12px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
 
         /* card editor overlay inside the frame */
@@ -289,7 +294,7 @@
 
             <!-- Live board mock -->
             <div class="frame" id="frame">
-                <div class="frame-bar"><i></i><i></i><i></i><span>beckon.run/?board=voyage</span><span class="try"><i></i> Live demo, drag a card or open one</span></div>
+                <div class="frame-bar"><i></i><i></i><i></i><span>beckon.run/?board=voyage</span><span class="try"><i></i> Live demo: drag a card, open one, or right-click it</span></div>
                 <div class="mb" id="mb"></div>
                 <div class="mb-hint">Nothing here is saved. Reload to reset.</div>
                 <div class="mw" id="mw">
@@ -427,7 +432,7 @@
         const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
         const EMOJI = { rocket: '🚀', memo: '📝', tada: '🎉', sparkles: '✨', ship: '🚢', anchor: '⚓', compass: '🧭', bug: '🐛', art: '🎨', zap: '⚡', white_check_mark: '✅', thumbsup: '👍', '+1': '👍', fire: '🔥', eyes: '👀', wave: '👋', coffee: '☕', star: '⭐', heart: '❤️', warning: '⚠️' };
         const ic = (d, cls = 'i sm') => `<svg class="${cls}" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
-        const I = { text: 'M4 6.5h16M4 12h16M4 17.5h9', check: 'M12 21a9 9 0 100-18 9 9 0 000 18zM8.5 12.3l2.3 2.3 4.7-4.8', clock: 'M12 21a9 9 0 100-18 9 9 0 000 18zM12 7.5V12l3 2', plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6L6 18', chat: 'M20 12.5c0 3.6-3.6 6.5-8 6.5-1.3 0-2.6-.3-3.7-.7L4 20l1.1-3.3C4.4 15.5 4 14 4 12.5 4 8.9 7.6 6 12 6s8 2.9 8 6.5z', sun: 'M12 16.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zM12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M5.6 18.4l1.3-1.3M17.1 6.9l1.3-1.3', moon: 'M20 14.2A8 8 0 019.8 4a8 8 0 1010.2 10.2z' };
+        const I = { text: 'M4 6.5h16M4 12h16M4 17.5h9', check: 'M12 21a9 9 0 100-18 9 9 0 000 18zM8.5 12.3l2.3 2.3 4.7-4.8', clock: 'M12 21a9 9 0 100-18 9 9 0 000 18zM12 7.5V12l3 2', plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6L6 18', chat: 'M20 12.5c0 3.6-3.6 6.5-8 6.5-1.3 0-2.6-.3-3.7-.7L4 20l1.1-3.3C4.4 15.5 4 14 4 12.5 4 8.9 7.6 6 12 6s8 2.9 8 6.5z', dup: 'M8 8V5.5A1.5 1.5 0 019.5 4h9A1.5 1.5 0 0120 5.5v9a1.5 1.5 0 01-1.5 1.5H16M4 9.5A1.5 1.5 0 015.5 8h9A1.5 1.5 0 0116 9.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 014 18.5v-9z', archive: 'M4 5.5h16v4H4zM5.5 9.5v9A1.5 1.5 0 007 20h10a1.5 1.5 0 001.5-1.5v-9M10 13.5h4', trash: 'M4 7h16M9.5 7V4.5h5V7M6.5 7l.8 12.2A1.5 1.5 0 008.8 20.5h6.4a1.5 1.5 0 001.5-1.3L17.5 7M10 11v6M14 11v6', pencil: 'M4 20h4l10.5-10.5a2.1 2.1 0 00-3-3L5 17v3zM13.5 6.5l3 3', move: 'M4 12h16M14 6l6 6-6 6', sun: 'M12 16.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zM12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M5.6 18.4l1.3-1.3M17.1 6.9l1.3-1.3', moon: 'M20 14.2A8 8 0 019.8 4a8 8 0 1010.2 10.2z' };
         const toast = (m) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display = 'none', 2200); };
 
         /* ---- Theme (same contract as the app) ---- */
@@ -537,6 +542,34 @@
             const was = drag.moved; drag.el = null; drag.ghost = null; drag.ph = null; setTimeout(() => { drag.moved = false; }, 0); drag.moved = was;
         };
         window.addEventListener('pointerup', endDrag); window.addEventListener('pointercancel', endDrag);
+
+        /* ---- Context menu (right-click or long-press a card) ---- */
+        let ctxEl = null, pressTimer = null;
+        const closeCtx = () => { if (ctxEl) { ctxEl.remove(); ctxEl = null; } };
+        function showCtx(x, y, id) {
+            closeCtx(); const f = find(id); if (!f) return;
+            const el = document.createElement('div'); el.className = 'ctx';
+            const row = (a, label, d, cls = '') => `<button data-a="${a}" class="${cls}">${ic(d)} ${label}</button>`;
+            el.innerHTML = row('open', 'Open card', I.pencil) + row('move', 'Move to next list', I.move) + row('dup', 'Duplicate', I.dup) + row('archive', 'Archive', I.archive) + '<div class="sep"></div>' + row('delete', 'Delete', I.trash, 'danger');
+            document.body.appendChild(el); ctxEl = el;
+            const r = el.getBoundingClientRect(); el.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + 'px'; el.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + 'px';
+            el.addEventListener('click', (e) => {
+                const b = e.target.closest('[data-a]'); if (!b) return; closeCtx();
+                const cur = find(id); if (!cur) return; const { l, c, card } = cur;
+                if (b.dataset.a === 'open') openCard(id);
+                else if (b.dataset.a === 'move') { B.lists[l].cards.splice(c, 1); const to = (l + 1) % B.lists.length; B.lists[to].cards.unshift(card); renderBoard(); toast(`Moved to ${B.lists[to].title}`); }
+                else if (b.dataset.a === 'dup') { const copy = JSON.parse(JSON.stringify(card)); copy.id = 'c' + Date.now(); copy.title += ' (copy)'; copy.due = card.due; B.lists[l].cards.splice(c + 1, 0, copy); renderBoard(); toast('Card duplicated'); }
+                else if (b.dataset.a === 'archive') { B.lists[l].cards.splice(c, 1); renderBoard(); toast(`Archived "${card.title}"`); }
+                else if (b.dataset.a === 'delete') { B.lists[l].cards.splice(c, 1); renderBoard(); toast('Card deleted'); }
+            });
+        }
+        mb.addEventListener('contextmenu', (e) => { const card = e.target.closest('.mc'); if (!card) return; e.preventDefault(); drag.el = null; showCtx(e.clientX, e.clientY, card.dataset.id); });
+        mb.addEventListener('pointerdown', (e) => { const card = e.target.closest('.mc'); if (!card || e.pointerType === 'mouse') return; clearTimeout(pressTimer); pressTimer = setTimeout(() => { drag.el = null; showCtx(e.clientX, e.clientY, card.dataset.id); }, 550); });
+        window.addEventListener('pointermove', (e) => { if (pressTimer && drag.el && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 6) { clearTimeout(pressTimer); pressTimer = null; } });
+        window.addEventListener('pointerup', () => { clearTimeout(pressTimer); pressTimer = null; });
+        document.addEventListener('pointerdown', (e) => { if (ctxEl && !e.target.closest('.ctx')) closeCtx(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx(); });
+        window.addEventListener('wheel', closeCtx, { passive: true }); window.addEventListener('touchmove', closeCtx, { passive: true });
 
         /* ---- Card window ---- */
         const mw = $('#mw'), ta = $('#mw-ta'), mdEl = $('#mw-md'); let active = null, view = 'split';
