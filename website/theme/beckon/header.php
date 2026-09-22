@@ -14,9 +14,9 @@
                 Beckon
             </a>
             <div class="links">
-                <a href="#new">What's new</a>
-                <a href="#features">Features</a>
-                <a href="#install">Install</a>
+                <a href="<?php echo esc_url(home_url('/#new')); ?>">What's new</a>
+                <a href="<?php echo esc_url(home_url('/#features')); ?>">Features</a>
+                <a href="<?php echo esc_url(home_url('/#install')); ?>">Install</a>
                 <a href="<?php echo esc_url(home_url('/changelog/')); ?>">Changelog</a>
                 <button id="theme-toggle" title="Toggle light / dark. Right-click for system" aria-label="Toggle theme"></button>
                 <a href="https://github.com/austinginder/beckon" class="gh">GitHub</a>
