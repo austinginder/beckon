@@ -1168,6 +1168,7 @@ class App {
             }
             rmdir($p);
         }
+        $this->searchIndex->removeBoard($this->slugify($input['board']));
         return ['status' => 'ok'];
     }
 
@@ -1831,6 +1832,12 @@ class SearchIndex {
         $this->db->prepare("DELETE FROM card_index WHERE card_id = ?")->execute([$cardId]);
     }
     
+    public function removeBoard($boardId) {
+        if (!$this->db) return;
+        $this->db->prepare("DELETE FROM cards_fts WHERE board_id = ?")->execute([$boardId]);
+        $this->db->prepare("DELETE FROM card_index WHERE board_id = ?")->execute([$boardId]);
+    }
+
     public function updateBoardName($boardId, $newName) {
         if (!$this->db) return;
         $this->db->prepare("UPDATE card_index SET board_name = ? WHERE board_id = ?")->execute([$newName, $boardId]);
