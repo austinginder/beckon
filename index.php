@@ -93,6 +93,17 @@ class App {
         // Disable output buffering
         while (ob_get_level()) ob_end_clean();
 
+        // PHP's built-in server answers one request at a time unless
+        // PHP_CLI_SERVER_WORKERS says otherwise, and a stream that sleeps would
+        // hold that one worker: every other tab and API call stalls until the
+        // stream ends. Say there is no live reload here and stop; the client
+        // does not reconnect.
+        if (php_sapi_name() === 'cli-server' && (int) getenv('PHP_CLI_SERVER_WORKERS') < 2) {
+            echo "event: unavailable\ndata: {\"reason\":\"single-worker\"}\n\n";
+            flush();
+            return;
+        }
+
         $lastMtime = filemtime($layoutPath);
 
         // Send initial connection event
@@ -111,6 +122,11 @@ class App {
             if ($currentMtime !== $lastMtime) {
                 $lastMtime = $currentMtime;
                 echo "event: board_updated\ndata: {\"mtime\":{$currentMtime}}\n\n";
+                flush();
+            } elseif ((time() - $start) % 15 === 0) {
+                // A comment line is invisible to the client but is a write, and a
+                // write is what lets connection_aborted() notice a closed tab.
+                echo ": keep-alive\n\n";
                 flush();
             }
 
@@ -1980,6 +1996,7 @@ class Updater {
      * talks to GitHub: the browser asks for a refresh once per session, the CLI forces.
      */
     public function check($force = false, $refresh = false) {
+        $this->adoptLegacyBackup();
         $state = $this->readState();
         $age = time() - ($state['last_check'] ?? 0);
         $stale = $force || ($refresh && (empty($state['latest_version']) || $age > self::CACHE_TTL || (!empty($state['error']) && $age > self::RETRY_TTL)));
@@ -2172,6 +2189,17 @@ class Updater {
     }
 
     private function ensureBackupDir() { if (!is_dir($this->backupDir)) mkdir($this->backupDir, 0755, true); }
+
+    // 1.0's updater left index.php.bak beside the app, where a web server serves
+    // it as plain text. Move it under boards/.updates/ with the name the Restore
+    // link understands, so it is out of the web root and still restorable.
+    private function adoptLegacyBackup() {
+        $bak = $this->baseDir . '/index.php.bak';
+        if (!file_exists($bak) || !is_file($bak)) return;
+        $this->ensureBackupDir();
+        $dest = $this->backupDir . '/index.php.' . $this->versionOf($bak, 'index.php') . '.' . (filemtime($bak) ?: time());
+        @rename($bak, $dest);
+    }
     private function readState() { $s = @json_decode(@file_get_contents($this->stateFile), true); return is_array($s) ? $s : []; }
     private function writeState($state) { if (!is_dir(dirname($this->stateFile))) mkdir(dirname($this->stateFile), 0755, true); $tmp = $this->stateFile . '.tmp.' . uniqid(); file_put_contents($tmp, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)); rename($tmp, $this->stateFile); }
 }
@@ -3209,6 +3237,7 @@ const S = {
 };
 let lastSaveTime = 0;
 let eventSource = null;
+let sseUnavailable = false;
 
 /* ---------- API ---------- */
 function setSync(state) {
@@ -3249,7 +3278,7 @@ async function loadData() {
 }
 function connectSSE() {
     if (eventSource) { eventSource.close(); eventSource = null; }
-    if (!S.boardId || !window.EventSource) return;
+    if (!S.boardId || !window.EventSource || sseUnavailable) return;
     eventSource = new EventSource(`?action=events&board=${encodeURIComponent(S.boardId)}`);
     eventSource.addEventListener('board_updated', async () => {
         if (Date.now() - lastSaveTime < 2000) return;
@@ -3257,6 +3286,9 @@ function connectSSE() {
         await loadData(); renderBoard();
     });
     eventSource.addEventListener('timeout', () => { eventSource.close(); connectSSE(); });
+    // The server has no worker to spare for a stream (PHP's built-in server
+    // with one worker): stop asking, or the retry would stall the board.
+    eventSource.addEventListener('unavailable', () => { sseUnavailable = true; eventSource.close(); eventSource = null; });
     eventSource.onerror = () => { eventSource.close(); setTimeout(connectSSE, 5000); };
 }
 

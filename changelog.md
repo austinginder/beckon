@@ -25,6 +25,8 @@ The rebuild release. Beckon 2.0 drops every third-party library and ships an int
 * **A proper updater:** downloads are verified against the sha256 checksum GitHub publishes for each release asset, the outgoing files are kept in `boards/.updates/` and can be restored from the boards screen, release notes show before installing, and the web endpoint no longer accepts a target version so nobody can downgrade a board from the browser. Update checks are cached for a week and only happen while someone has a board open. `php beckon-cli.php update` runs the same updater from a shell (`--check`, `--yes`, `--rollback`), lints the download first, and updates the CLI itself.
 
 ### 🐛 Fixes
+* **Live reload on PHP's built-in server:** `php -S` answers one request at a time unless `PHP_CLI_SERVER_WORKERS` says otherwise, and the live reload stream held that one request, so every other tab and API call stalled while a board was open. On a single-worker server Beckon now says so once and the board runs without live reload; the readme's quick start sets four workers. On every server the stream sends a keep-alive comment every 15 seconds so a closed tab frees its worker promptly.
+* **Leftover 1.0 backup:** the 1.0 updater left `index.php.bak` next to the app, where a web server serves it as plain text. The first update check after upgrading moves it into `boards/.updates/` under the name the Restore link understands.
 * **WordPress publishing:** images now become proper image blocks in the draft. The transform previously never matched and swapped the id and URL.
 * **Standalone export:** the exported presentation is self-contained and no longer loads Tailwind from a CDN.
 

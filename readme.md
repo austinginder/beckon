@@ -39,10 +39,10 @@ Any server with PHP 8 works. For a quick local run:
 ```bash
 mkdir beckon && cd beckon
 curl -OL https://github.com/austinginder/beckon/releases/latest/download/index.php
-php -S localhost:8000
+PHP_CLI_SERVER_WORKERS=4 php -S localhost:8000
 ```
 
-Open http://localhost:8000 and create your first board. Beckon writes to a `boards/` folder next to `index.php`, so that folder needs to be writable.
+Open http://localhost:8000 and create your first board. Beckon writes to a `boards/` folder next to `index.php`, so that folder needs to be writable. The workers variable matters: PHP's built-in server answers one request at a time unless you give it more, and live reload keeps one request open. Without it Beckon still works, it just skips live reload.
 
 Search needs the SQLite PDO extension, which ships with most PHP builds. Without it everything else still works and search is simply unavailable.
 
