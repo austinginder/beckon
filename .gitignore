@@ -1,3 +1,8 @@
-.gitigore
 boards/
-landing.html
+website/cache/
+website/deploy.sh
+restore/
+reports/
+public-dump.txt
+.claude/
+.DS_Store
