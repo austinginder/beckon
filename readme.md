@@ -2,52 +2,53 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-**Beckon** is a lightweight, open-source, self-hosted Kanban board that lives in a single PHP file. It requires no database setup, using a flat-file storage system (JSON and Markdown) to keep your data portable, human-readable, and easy to back up. The frontend is built with Vue 3 and Tailwind CSS (bundled via CDN), making deployment as simple as dropping one file onto your server.
+**Beckon** is a self-hosted Kanban board that lives in a single PHP file. Boards are folders, cards are Markdown files, and there is no database, no build step, and no third-party JavaScript. Drop `index.php` on any server with PHP and you have a board.
 
-## ✨ Features
+*Where Markdown charts the course.*
 
-* **Single-File Deployment:** No `composer install`, no `npm run build`, and no database required. Just `index.php`.
-* **Flat-File Storage:**
-    * **Boards:** Organized as directories.
-    * **Cards:** Stored as individual `.md` files for content and `.json` for metadata.
-    * **Portability:** Easy to sync with Dropbox/Nextcloud or version control with Git.
-* **Smart Editor:**
-    * Full Markdown rendering with a **resizable split-pane** preview.
-    * **Drag-and-drop image uploads** directly into the editor.
-    * **Task Tracking:** Interactive checkboxes (`- [ ]`) in card descriptions are automatically tracked as progress bars on the board view.
-* **Kanban Workflow:**
-    * Drag-and-drop cards between lists.
-    * **Cross-Board Moving:** Move cards easily from one board to another via the sidebar actions.
-    * **Due Dates:** Set deadlines with visual color indicators for approaching or overdue tasks.
-* **Time Travel & Revisions:**
-    * Detailed revision history for every card description.
-    * Use the **history slider** to preview past versions and restore them with a single click.
-* **Trello Import:** Native support for importing Trello JSON exports (lists, cards, checklists, labels, and comments).
-    * **Private Board Support:** Includes a utility to paste cURL headers, allowing Beckon to download attachments and avatars from private Trello boards during import.
-* **User Identity:** Simple "Guest" identity settings to customize your display name and avatar color for the session.
-* **Dark Mode:** Built-in toggle for light/dark themes.
-* **Activity Log:** Comments and activity history (moves, creations) are tracked per card.
-* **One-Click Updates:** Beckon checks for new releases automatically and can self-update the `index.php` file directly from the UI.
+![Beckon board in light mode](.github/screenshot-light.png)
 
-## ⌨️ Keyboard Shortcuts
-* **`Enter`**: Open the currently hovered card.
-* **`c`**: Archive the currently hovered card (with confirmation).
-* **`Esc`**: Close modals or the board switcher.
+![Card editor in dark mode](.github/screenshot-card-dark.png)
 
-## 🚀 Installation
+## Why
 
-If you are on a server with PHP installed, you can get running in seconds:
+Most Kanban tools own your data. Beckon keeps it in plain files you can open in a text editor, sync with Dropbox or Nextcloud, or commit to git. Everything the app needs ships in one file, so there is nothing to install, nothing to compile, and nothing that phones home. The interface is hand-built: custom CSS, custom SVG icons, and a small Markdown engine, all written for this app and all inline.
+
+## Features
+
+- **One file.** `index.php` is the whole app. Uploads and boards sit beside it.
+- **Flat-file storage.** A board is a folder. Each card is a `.md` file for the description and a `.json` file for comments, checklists, dates and history.
+- **Markdown editor with live preview.** Split, edit, or preview modes. Task lists (`- [ ]`) show up as progress on the board. Click in the preview to jump the cursor to that spot in the editor. Type `:` for emoji.
+- **Drag and drop.** Reorder cards and lists. Drop or paste images straight into the editor. Set any upload as a card cover.
+- **Labels, dates, assignees and checklists.** Due dates color by urgency on the board.
+- **Revision history.** Every change to a description is kept. Scrub through old versions with a slider and restore any of them.
+- **Comments with reactions.** Simple local identities, no accounts.
+- **Search across boards.** Full-text search backed by SQLite FTS5, opened with `/` or Cmd+K.
+- **Live reload.** Edit a card file on disk or from another tab and the board updates itself.
+- **Trello import.** Lists, cards, labels, checklists, comments, members and attachments, including private boards.
+- **Publish to WordPress.** Send a card to any WordPress site as a draft post. Images are uploaded first and the cover becomes the featured image.
+- **Presentation mode.** Show a card full screen, or export it as a standalone HTML file.
+- **Light and dark.** Follows your system by default. Toggle from the top bar.
+- **Self-updating.** Beckon checks GitHub for a new release once a day and can replace itself in one click.
+- **Command line.** `beckon-cli.php` creates, lists, imports and exports cards for scripting. See [cli.md](cli.md).
+
+## Install
+
+Any server with PHP 8 works. For a quick local run:
 
 ```bash
-mkdir beckon
-cd beckon
+mkdir beckon && cd beckon
 curl -OL https://github.com/austinginder/beckon/releases/latest/download/index.php
 php -S localhost:8000
 ```
 
-## 🏝️ Using [Cove](https://cove.run) to run Beckon
+Open http://localhost:8000 and create your first board. Beckon writes to a `boards/` folder next to `index.php`, so that folder needs to be writable.
 
-You will need to have Cove installed and running: https://cove.run. Beckon is a simple PHP app so it can be added to Cove by running the following commands:
+Search needs the SQLite PDO extension, which ships with most PHP builds. Without it everything else still works and search is simply unavailable.
+
+### With Cove
+
+[Cove](https://cove.run) runs local PHP sites with real HTTPS. Add Beckon as a plain site:
 
 ```bash
 cove add beckon --plain
@@ -55,36 +56,47 @@ cd $(cove path beckon)
 git clone https://github.com/austinginder/beckon.git .
 ```
 
-Then open https://beckon.localhost in your browser.
+Then open https://beckon.localhost.
 
-## ⚠️ Beckon vs. Trello: Feature Parity & Limitations
+## How the data is stored
 
-Beckon is designed as a **local-first, markdown-centric** Kanban tool. It is not a 1:1 clone of Trello's cloud SaaS architecture. While it preserves the "spirit" of your boards, there are fundamental differences in how it handles users, data, and interactivity.
+```
+boards/
+  search.db                 full-text index, rebuilt on demand
+  my-project/
+    layout.json             board title, lists, card order, archive
+    users.json              board members
+    2026-09-22_<id>.md      card description
+    2026-09-22_<id>.json    comments, checklists, activity, revisions
+    uploads/                images and attachments
+```
 
-### 1. Local-First vs. Cloud SaaS
-Beckon is a self-hosted, single-file PHP application. It does not rely on a central database or cloud infrastructure.
-* **No Real-Time Collaboration:** Unlike Trello, updates do not push to other open clients in real-time (no WebSockets).
-* **No Email/Notifications:** Beckon does not send transactional emails, push notifications, or reminders for due dates.
-* **No API Integrations:** Trello Power-Ups (GitHub, Google Drive, Slack, etc.) are not supported.
+Back up the `boards/` folder and you have everything. Move it to another install and the boards come with it.
 
-### 2. User Authentication & Security
-Beckon **does not have an authentication system**.
-* **Single-User / Local Mode:** The application assumes it is running in a trusted local environment or behind your own server-level authentication (e.g., Basic Auth).
-* **"Ghost" Accounts:** When importing from Trello, Beckon preserves member data (avatars, names) for historical accuracy in comments and activity logs. You can "Login As" these users via the UI to make edits under their persona, but there are no passwords, sessions, or permissions enforcing access control.
+## Keyboard shortcuts
 
-### 3. Trello Data Import Limitations
-While the importer is robust, specific Trello-native features are not converted:
-* **Reactions (Emoji):** Trello's JSON exports do not include emoji reaction data for comments. While Beckon supports adding reactions, your historical Trello reactions cannot be imported.
-* **Custom Fields:** Trello `customFields` and `pluginData` are not currently parsed or displayed in the Beckon UI.
-* **Stickers & Voting:** Visual stickers and card voting data are discarded during import.
-* **Archived Data:** While archived cards are imported, granular "closed" list states or complex board permissions are simplified to fit Beckon's flat structure.
-* **Automation:** Trello "Butler" rules and automation scripts are not executable in Beckon.
+| Key | Action |
+|---|---|
+| `/` or `Cmd+K` | Search across all boards |
+| `Enter` | Open the card under the cursor |
+| `c` | Archive the card under the cursor |
+| `Esc` | Close whatever is open |
+| Right click or long press | Card actions |
 
-### 4. Markdown vs. Rich Text
-Trello uses a specific flavor of Markdown mixed with proprietary rich text features. Beckon treats descriptions as **pure GitHub Flavored Markdown (GFM)**.
-* **Formatting:** Some Trello-specific formatting might render slightly differently.
-* **Checklists:** Beckon supports two types of checklists:
-    1.  **UI Checklists:** Native, database-driven checklists (imported from Trello checklists).
-    2.  **Markdown Tasks:** Standard `- [ ]` syntax inside the description (fully supported and interactive).
+## Security
 
-Use Beckon if you want full ownership of your data in flat files (`.md` and `.json`) and a fast, offline-capable interface. Stick with Trello if you need team management, extensive integrations, or enterprise-grade permissions.
+Beckon has no login. It assumes a trusted network or a server that handles authentication in front of it, such as HTTP basic auth or a VPN. Do not put it on the open internet as is.
+
+## Beckon and Trello
+
+The Trello importer brings over lists, cards, descriptions, labels, due dates, members, checklists, comments and attachments. For a private board, paste a "Copy as cURL" command from your browser and Beckon uses those cookies to download the attachments.
+
+A few Trello things do not carry over: custom fields, stickers, votes, Butler automations and emoji reactions on comments (Trello leaves them out of its export). Beckon treats descriptions as GitHub-flavored Markdown, so Trello's own formatting quirks may render a little differently.
+
+## Updating
+
+Beckon looks for a new release once a day. When one exists, the boards screen shows an update button. Installing it downloads the tagged `index.php` from GitHub, keeps a copy of the old file as `index.php.bak`, and reloads.
+
+## License
+
+MIT. See [license](license).
