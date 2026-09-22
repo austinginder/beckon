@@ -13,7 +13,19 @@
         const paintToggle = () => { $('#theme-toggle').innerHTML = ic(isDark() ? I.sun : I.moon, 'i'); };
         paintToggle();
         $('#theme-toggle').addEventListener('click', () => setTheme(isDark() ? 'light' : 'dark'));
-        $('#theme-toggle').addEventListener('contextmenu', (e) => { e.preventDefault(); setTheme('system'); toast('Following the system theme'); });
+        const themeMode = () => document.documentElement.getAttribute('data-theme') || 'system';
+        $('#theme-toggle').addEventListener('contextmenu', (e) => {
+            e.preventDefault(); closeThemeCtx();
+            const cur = themeMode();
+            const row = (m, label, d) => `<button data-t="${m}">${ic(d)} ${label}<span style="margin-left:auto;color:var(--accent-ink)">${cur === m ? ic('M5 12.5l4.5 4.5L19 7') : ''}</span></button>`;
+            const el = document.createElement('div'); el.className = 'ctx theme-ctx'; el.innerHTML = row('light', 'Light', I.sun) + row('dark', 'Dark', I.moon) + row('system', 'System', 'M4 5.5A1.5 1.5 0 015.5 4h13A1.5 1.5 0 0120 5.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 14.5v-9zM12 15v4M8.5 19h7');
+            document.body.appendChild(el);
+            const r = el.getBoundingClientRect(); el.style.left = Math.max(8, Math.min(e.clientX, innerWidth - r.width - 8)) + 'px'; el.style.top = Math.max(8, Math.min(e.clientY, innerHeight - r.height - 8)) + 'px';
+            el.addEventListener('click', (ev) => { const b = ev.target.closest('[data-t]'); if (!b) return; closeThemeCtx(); setTheme(b.dataset.t); });
+        });
+        const closeThemeCtx = () => { $$('.theme-ctx').forEach((x) => x.remove()); };
+        document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.theme-ctx')) closeThemeCtx(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeThemeCtx(); });
         matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintToggle);
 
         /* ---- Tiny Markdown (a subset of the engine in index.php) ---- */
