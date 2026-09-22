@@ -123,52 +123,23 @@ class App {
 
     // --- API Actions ---
 
-    protected function actionCheckUpdates() {
-        $stateFile = $this->boardsDir . '/update_state.json';
-        $state = file_exists($stateFile) ? json_decode(file_get_contents($stateFile), true) : ['last_check' => 0, 'latest_version' => BECKON_VERSION];
+    private $updater;
+    private function updater() { return $this->updater ?? ($this->updater = new Updater($this->baseDir)); }
 
-        if (time() - ($state['last_check'] ?? 0) > 86400) {
-            $ch = curl_init();
-            curl_setopt_array($ch, [
-                CURLOPT_URL => 'https://github.com/austinginder/beckon/releases/latest',
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_HEADER => true,
-                CURLOPT_NOBODY => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_USERAGENT => 'Beckon-Updater'
-            ]);
-            curl_exec($ch);
-            $effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
-            curl_close($ch);
-
-            $latestVersion = basename($effectiveUrl);
-            $state = ['last_check' => time(), 'latest_version' => $latestVersion];
-            $this->atomicWrite($stateFile, $state);
-        }
-
-        return [
-            'update_available' => version_compare(ltrim($state['latest_version'], 'v'), ltrim(BECKON_VERSION, 'v'), '>'),
-            'latest_version' => $state['latest_version']
-        ];
+    /**
+     * {} reads the cached answer only. {"background": true} refreshes when the cache is older
+     * than a week (sent once per browser session). {"force": true} always asks GitHub.
+     */
+    protected function actionCheckUpdates($input) {
+        return $this->updater()->check(!empty($input['force']), !empty($input['background']));
     }
 
-    protected function actionPerformUpdate($input) {
-        $targetVersion = $input['version'] ?? null;
-        if (!$targetVersion || !preg_match('/^v?[\d\.]+$/', $targetVersion)) throw new Exception("Invalid version");
+    protected function actionPerformUpdate() {
+        return $this->updater()->install();
+    }
 
-        $url = "https://raw.githubusercontent.com/austinginder/beckon/{$targetVersion}/index.php";
-        $newContent = @file_get_contents($url);
-        
-        if (!$newContent || strpos($newContent, '<?php') !== 0) throw new Exception("Download failed or invalid file signature.");
-
-        if (!copy(__FILE__, __FILE__ . '.bak')) throw new Exception("Could not create backup.");
-        $this->atomicWrite(__FILE__, $newContent);
-
-        if (function_exists('opcache_reset')) {
-            opcache_reset();
-        }
-
-        return ['status' => 'updated'];
+    protected function actionUpdateRollback() {
+        return $this->updater()->rollback();
     }
 
     protected function actionImportTrello($input) {
@@ -1974,6 +1945,240 @@ class SearchIndex {
     }
 }
 
+// ========================================
+// UPDATER (GitHub releases, verified downloads)
+// ========================================
+
+class Updater {
+    const REPO = 'austinginder/beckon';
+    const FILES = ['index.php', 'beckon-cli.php'];
+    const KEEP_BACKUPS = 3;
+
+    private $baseDir;
+    private $stateFile;
+    private $backupDir;
+    private $api;
+
+    public function __construct($baseDir) {
+        $this->baseDir = rtrim($baseDir, '/');
+        $this->stateFile = $this->baseDir . '/boards/update_state.json';
+        $this->backupDir = $this->baseDir . '/boards/.updates';
+        $this->api = rtrim(defined('BECKON_UPDATE_API') ? BECKON_UPDATE_API : (getenv('BECKON_UPDATE_API') ?: 'https://api.github.com/repos/' . self::REPO), '/');
+    }
+
+    public function isGitCheckout() {
+        return is_dir($this->baseDir . '/.git');
+    }
+
+    const CACHE_TTL = 604800;   // a week between background checks
+    const RETRY_TTL = 86400;    // a day before retrying a failed check
+
+    /**
+     * Returns the update summary. GitHub is contacted only when $force is set, or when
+     * $refresh is set and the cached answer is older than a week (a failed check waits a
+     * day). Callers that only want the cached state pass neither, so an idle install never
+     * talks to GitHub: the browser asks for a refresh once per session, the CLI forces.
+     */
+    public function check($force = false, $refresh = false) {
+        $state = $this->readState();
+        $age = time() - ($state['last_check'] ?? 0);
+        $stale = $force || ($refresh && (empty($state['latest_version']) || $age > self::CACHE_TTL || (!empty($state['error']) && $age > self::RETRY_TTL)));
+        if ($stale) {
+            try {
+                $release = $this->fetchLatest();
+                $state = array_merge($release, ['last_check' => time(), 'error' => null]);
+            } catch (Exception $e) {
+                $state['last_check'] = time();
+                $state['error'] = $e->getMessage();
+            }
+            $this->writeState($state);
+        }
+        return $this->summary($state);
+    }
+
+    /**
+     * Installs the latest release. Takes no target version on purpose: the server picks
+     * the newest release and only ever moves forward. $preCheck($tmpPath, $name) may throw
+     * to veto a file (the CLI runs php -l there).
+     */
+    public function install(?callable $preCheck = null) {
+        if ($this->isGitCheckout()) throw new Exception("This is a git checkout. Update it with git pull instead.");
+        $summary = $this->check(false, true);
+        if (!empty($summary['error']) && empty($summary['latest'])) throw new Exception("Update check failed: " . $summary['error']);
+        if (!$summary['update_available']) throw new Exception("Already up to date (v" . BECKON_VERSION . ").");
+        $state = $this->readState();
+        $version = $state['latest_version'];
+        $assets = $state['assets'] ?? [];
+        if (empty($assets['index.php']['url'])) throw new Exception("Release v$version has no index.php asset.");
+
+        $targets = ['index.php'];
+        if (file_exists($this->baseDir . '/beckon-cli.php') && !empty($assets['beckon-cli.php']['url'])) $targets[] = 'beckon-cli.php';
+
+        $staged = []; $tmp = null;
+        try {
+            foreach ($targets as $name) {
+                $asset = $assets[$name];
+                if (empty($asset['sha256'])) throw new Exception("Release v$version publishes no checksum for $name. Refusing to install an unverified file.");
+                $path = $this->baseDir . '/' . $name;
+                if (!is_writable($path) || !is_writable($this->baseDir)) throw new Exception("$name is not writable by this process. Run: php beckon-cli.php update");
+                $tmp = "$path.update-" . uniqid() . ".tmp";
+                $this->download($asset['url'], $tmp);
+                $actual = hash_file('sha256', $tmp);
+                if (!hash_equals(strtolower($asset['sha256']), $actual)) throw new Exception("Checksum mismatch for $name. Expected {$asset['sha256']}, got $actual.");
+                $head = file_get_contents($tmp, false, null, 0, 200);
+                if (strpos($head, '<?php') === false) throw new Exception("Downloaded $name does not look like a PHP file.");
+                if ($name === 'index.php' && strpos(file_get_contents($tmp), "define('BECKON_VERSION', '$version')") === false) throw new Exception("Downloaded index.php does not declare version $version.");
+                if ($preCheck) $preCheck($tmp, $name);
+                @chmod($tmp, fileperms($path) & 0777);
+                $staged[$name] = $tmp;
+            }
+        } catch (Exception $e) {
+            if ($tmp) @unlink($tmp);
+            foreach ($staged as $t) @unlink($t);
+            throw $e;
+        }
+
+        $this->ensureBackupDir();
+        foreach ($staged as $name => $tmp) {
+            $path = $this->baseDir . '/' . $name;
+            $backup = $this->backupDir . "/$name." . $this->versionOf($path, $name) . '.' . time();
+            if (!copy($path, $backup)) { foreach ($staged as $t) @unlink($t); throw new Exception("Could not back up $name."); }
+            if (DIRECTORY_SEPARATOR === '\\' && file_exists($path)) @unlink($path);
+            if (!rename($tmp, $path)) throw new Exception("Could not replace $name. The previous copy is at $backup.");
+        }
+        $this->pruneBackups();
+        if (function_exists('opcache_reset')) @opcache_reset();
+        $state['last_check'] = 0;
+        $this->writeState($state);
+        return ['status' => 'updated', 'from' => BECKON_VERSION, 'to' => $version, 'files' => array_keys($staged)];
+    }
+
+    /** Restores the most recent backup of each file taken by install(). */
+    public function rollback() {
+        $restored = [];
+        foreach (self::FILES as $name) {
+            $backup = $this->latestBackup($name);
+            if (!$backup) continue;
+            $path = $this->baseDir . '/' . $name;
+            if (!is_writable($path) || !is_writable($this->baseDir)) throw new Exception("$name is not writable by this process.");
+            $this->ensureBackupDir();
+            $keep = $this->backupDir . "/$name." . $this->versionOf($path, $name) . '.' . time() . '.replaced';
+            copy($path, $keep);
+            if (DIRECTORY_SEPARATOR === '\\') @unlink($path);
+            if (!rename($backup, $path)) throw new Exception("Could not restore $name from $backup.");
+            $restored[$name] = $this->versionOf($path, $name);
+        }
+        if (!$restored) throw new Exception("No backup to restore.");
+        if (function_exists('opcache_reset')) @opcache_reset();
+        $state = $this->readState(); $state['last_check'] = 0; $this->writeState($state);
+        return ['status' => 'restored', 'versions' => $restored];
+    }
+
+    public function summary($state = null) {
+        $state = $state ?? $this->readState();
+        $latest = isset($state['latest_version']) ? ltrim($state['latest_version'], 'v') : null;
+        $prev = $this->latestBackup('index.php');
+        return [
+            'current' => BECKON_VERSION,
+            'latest' => $latest,
+            'update_available' => $latest && version_compare($latest, BECKON_VERSION, '>'),
+            'verified' => !empty($state['assets']['index.php']['sha256']),
+            'notes' => $state['notes'] ?? '',
+            'published_at' => $state['published_at'] ?? null,
+            'html_url' => $state['html_url'] ?? null,
+            'git_checkout' => $this->isGitCheckout(),
+            'writable' => is_writable($this->baseDir . '/index.php') && is_writable($this->baseDir),
+            'can_rollback' => (bool) $prev,
+            'previous_version' => $prev ? $this->versionOf($prev, 'index.php') : null,
+            'last_check' => $state['last_check'] ?? 0,
+            'error' => $state['error'] ?? null,
+        ];
+    }
+
+    // --- internals ---
+
+    private function fetchLatest() {
+        $json = json_decode($this->download($this->api . '/releases/latest'), true);
+        if (!is_array($json) || empty($json['tag_name'])) throw new Exception("Unexpected response from GitHub.");
+        $version = ltrim($json['tag_name'], 'v');
+        if (!preg_match('/^\d+\.\d+\.\d+$/', $version)) throw new Exception("Unrecognized release tag {$json['tag_name']}.");
+        $assets = [];
+        $sums = null;
+        foreach ($json['assets'] ?? [] as $a) {
+            $name = $a['name'] ?? '';
+            if ($name === 'SHA256SUMS') { $sums = $a['browser_download_url'] ?? null; continue; }
+            if (!in_array($name, self::FILES, true)) continue;
+            $digest = $a['digest'] ?? '';
+            $assets[$name] = ['url' => $a['browser_download_url'] ?? '', 'sha256' => preg_match('/^sha256:([0-9a-f]{64})$/i', $digest, $m) ? strtolower($m[1]) : null];
+        }
+        $missing = array_filter($assets, fn($a) => empty($a['sha256']));
+        if ($missing && $sums) {
+            foreach (explode("\n", $this->download($sums)) as $line) {
+                if (preg_match('/^([0-9a-f]{64})\s+\*?(\S+)$/i', trim($line), $m) && isset($assets[$m[2]]) && empty($assets[$m[2]]['sha256'])) $assets[$m[2]]['sha256'] = strtolower($m[1]);
+            }
+        }
+        return [
+            'latest_version' => $version,
+            'tag' => $json['tag_name'],
+            'notes' => (string) ($json['body'] ?? ''),
+            'published_at' => $json['published_at'] ?? null,
+            'html_url' => $json['html_url'] ?? null,
+            'assets' => $assets,
+        ];
+    }
+
+    private function download($url, $toFile = null) {
+        $headers = ['User-Agent: Beckon-Updater/' . BECKON_VERSION, 'Accept: application/vnd.github+json, */*'];
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            $fp = $toFile ? fopen($toFile, 'wb') : null;
+            if ($toFile && !$fp) throw new Exception("Could not open $toFile for writing.");
+            curl_setopt_array($ch, [CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 5, CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 120, CURLOPT_FAILONERROR => false] + ($fp ? [CURLOPT_FILE => $fp] : [CURLOPT_RETURNTRANSFER => true]));
+            $body = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err = curl_error($ch);
+            curl_close($ch);
+            if ($fp) fclose($fp);
+            if ($body === false || $code !== 200) { if ($toFile) @unlink($toFile); throw new Exception("Download failed (" . ($err ?: "HTTP $code") . "): $url"); }
+            return $toFile ? true : $body;
+        }
+        $ctx = stream_context_create(['http' => ['header' => implode("\r\n", $headers), 'timeout' => 120, 'follow_location' => 1]]);
+        $body = @file_get_contents($url, false, $ctx);
+        if ($body === false) throw new Exception("Download failed: $url");
+        if ($toFile) { file_put_contents($toFile, $body); return true; }
+        return $body;
+    }
+
+    private function versionOf($path, $name) {
+        $head = @file_get_contents($path, false, null, 0, 4000) ?: '';
+        if (preg_match("/define\('" . ($name === 'beckon-cli.php' ? 'CLI_VERSION' : 'BECKON_VERSION') . "', '([^']+)'\)/", $head, $m)) return $m[1];
+        return 'unknown';
+    }
+
+    private function latestBackup($name) {
+        $files = glob($this->backupDir . "/$name.*");
+        $files = array_filter($files ?: [], fn($f) => substr($f, -9) !== '.replaced' && substr($f, -4) !== '.tmp');
+        if (!$files) return null;
+        usort($files, fn($a, $b) => filemtime($b) <=> filemtime($a));
+        return $files[0];
+    }
+
+    private function pruneBackups() {
+        foreach (self::FILES as $name) {
+            $files = glob($this->backupDir . "/$name.*") ?: [];
+            usort($files, fn($a, $b) => filemtime($b) <=> filemtime($a));
+            foreach (array_slice($files, self::KEEP_BACKUPS) as $old) @unlink($old);
+        }
+    }
+
+    private function ensureBackupDir() { if (!is_dir($this->backupDir)) mkdir($this->backupDir, 0755, true); }
+    private function readState() { $s = @json_decode(@file_get_contents($this->stateFile), true); return is_array($s) ? $s : []; }
+    private function writeState($state) { if (!is_dir(dirname($this->stateFile))) mkdir(dirname($this->stateFile), 0755, true); $tmp = $this->stateFile . '.tmp.' . uniqid(); file_put_contents($tmp, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)); rename($tmp, $this->stateFile); }
+}
+
+// Included by beckon-cli.php (and tests) for the shared classes only: stop before running the app or emitting HTML.
+if (defined('BECKON_NO_RUN')) return;
+
 // Instantiate and run
 (new App())->run();
 ?><!DOCTYPE html>
@@ -2941,7 +3146,7 @@ const S = {
         pop: null,
     },
     wp: { sites: lsGet('beckon_wp_sites', []), selected: lsRaw('beckon_wp_selected') || '' },
-    update: { available: false, latest: '' },
+    update: { current: '<?php echo BECKON_VERSION; ?>', latest: null, update_available: false },
     searchStats: { available: false, card_count: 0 },
 };
 let lastSaveTime = 0;
@@ -3235,19 +3440,35 @@ function openOverview() {
         <div class="overview-foot">
             <a href="https://beckon.run/changelog" target="_blank" rel="noopener">${LOGO.replace('class="mark"', 'class="mark" style="width:18px;height:18px;border-radius:4px"')} v${esc(VERSION)}</a><span>·</span>
             <a href="https://github.com/austinginder/beckon" target="_blank" rel="noopener">GitHub</a>
-            ${S.update.available ? `<span>·</span><button class="update" data-ov-update>${icon('download', 'sm')} Update to ${esc(S.update.latest)}</button>` : ''}
+            ${S.update.update_available ? `<span>·</span><button class="update" data-ov-update>${icon('download', 'sm')} Update to v${esc(S.update.latest)}</button>` : `<span>·</span><a href="#" data-ov-check title="${S.update.error ? esc('Last check failed: ' + S.update.error) : (S.update.last_check ? 'Checked ' + esc(timeAgo(new Date(S.update.last_check * 1000).toISOString())) : '')}">${S.update.error ? icon('warning', 'sm') + ' ' : ''}Check for updates</a>`}
+            ${S.update.can_rollback ? `<span>·</span><a href="#" data-ov-rollback title="Restore the copy saved before the last update">Restore v${esc(S.update.previous_version || 'previous')}</a>` : ''}
         </div>`;
     document.body.appendChild(el);
     on(el, 'click', '[data-ov-close]', closeOverview);
     on(el, 'click', '[data-ov-new]', openCreateBoard);
     on(el, 'click', '[data-ov-board]', (e, t) => selectBoard(t.dataset.ovBoard));
-    on(el, 'click', '[data-ov-update]', performUpdate);
+    on(el, 'click', '[data-ov-update]', openUpdateDialog);
+    on(el, 'click', '[data-ov-check]', async (e) => { e.preventDefault(); toast('Checking GitHub…', 'info'); try { S.update = await api('check_updates', { force: true }); openOverview(); toast(S.update.update_available ? `Beckon v${S.update.latest} is available` : S.update.error ? 'Check failed: ' + S.update.error : `You are on the latest version (v${S.update.current})`, S.update.error ? 'err' : 'ok'); } catch (x) { toast('Check failed: ' + x.message, 'err'); } });
+    on(el, 'click', '[data-ov-rollback]', async (e) => { e.preventDefault(); if (!await dialog.confirm({ title: `Restore v${S.update.previous_version}?`, message: 'The current index.php (and CLI, if present) is swapped for the copy saved before the last update. Your boards are not touched.', ok: 'Restore' })) return; try { await api('update_rollback'); toast('Previous version restored. Reloading…'); setTimeout(() => location.reload(), 800); } catch (x) { toast('Restore failed: ' + x.message, 'err'); } });
 }
 function closeOverview() { const el = document.getElementById('overview'); if (el) el.remove(); }
-async function performUpdate() {
-    if (!await dialog.confirm({ title: `Install Beckon ${S.update.latest}?`, message: 'index.php will be replaced with the new release. A backup is kept as index.php.bak.', ok: 'Install update', info: true })) return;
-    try { await api('perform_update', { version: S.update.latest }); toast('Updated. Reloading…'); setTimeout(() => location.reload(), 800); }
-    catch (e) { toast('Update failed: ' + e.message, 'err'); }
+function openUpdateDialog() {
+    const u = S.update;
+    const blocker = u.git_checkout ? 'This install is a git checkout. Update it with <code>git pull</code> instead.' : !u.writable ? 'The web server cannot write to <code>index.php</code>. Run <code>php beckon-cli.php update</code> on the server instead.' : !u.verified ? 'This release publishes no checksum for <code>index.php</code>, so Beckon will not install it automatically. Download it from GitHub instead.' : '';
+    const el = openLayer('update', `<div class="win md">${winHead(`Beckon v${esc(u.latest)}`, 'update')}
+        <div class="win-body scroll">
+            <div class="help" style="margin-bottom:12px">${u.published_at ? `Released ${esc(timeAgo(u.published_at))}. ` : ''}You are on v${esc(u.current)}. ${u.html_url ? `<a href="${esc(u.html_url)}" target="_blank" rel="noopener">View on GitHub</a>.` : ''}</div>
+            ${blocker ? `<div class="danger-zone" style="margin-bottom:12px"><h4>${icon('warning', 'sm')} Cannot install from here</h4><p>${blocker}</p></div>` : `<div class="help" style="margin-bottom:12px">${icon('lock', 'xs')} The download is verified against the checksum GitHub publishes for the release. The current file is kept in <code>boards/.updates/</code> so you can restore it.</div>`}
+            <div class="md" style="font-size:13.5px;max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--surface-2)">${md.render(u.notes || '') || '<p class="help">No release notes.</p>'}</div>
+        </div>
+        <div class="win-foot"><button class="btn" data-close="update">Not now</button>${blocker ? '' : `<button class="btn primary" data-install>${icon('download', 'sm')} Install v${esc(u.latest)}</button>`}</div></div>`);
+    bindClose(el);
+    const btn = $('[data-install]', el);
+    if (btn) btn.addEventListener('click', async () => {
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Installing…`;
+        try { const r = await api('perform_update'); closeLayer('update'); toast(`Updated to v${r.to}. Reloading…`); setTimeout(() => location.reload(), 900); }
+        catch (x) { btn.disabled = false; btn.innerHTML = `${icon('download', 'sm')} Install v${esc(u.latest)}`; toast('Update failed: ' + x.message, 'err'); }
+    });
 }
 
 /* ---------- Board ---------- */
@@ -4190,7 +4411,8 @@ async function boot() {
     bindTopbar(); bindBoard(); renderTopbar(); renderBoard();
     const urlBoard = new URLSearchParams(location.search).get('board'); if (urlBoard) S.boardId = urlBoard;
     await fetchBoards();
-    api('check_updates').then((r) => { if (r && r.update_available) { S.update = { available: true, latest: r.latest_version }; if (document.getElementById('overview')) openOverview(); } }).catch(() => {});
+    // One background check per browser session; the server only calls GitHub when its week-old cache has expired.
+    api('check_updates', { background: true }).then((r) => { if (r && typeof r === 'object') { S.update = r; if (document.getElementById('overview')) openOverview(); } }).catch(() => {});
     api('search_stats').then((r) => { if (r) S.searchStats = r; }).catch(() => {});
     if (!S.boards.length) { S.boardId = ''; S.board = { title: 'Welcome', lists: [], archive: [], users: {} }; renderTopbar(); renderBoard(); openOverview(); return; }
     if (!S.boards.find((b) => b.id === S.boardId)) S.boardId = S.boards[0].id;

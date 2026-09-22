@@ -825,6 +825,10 @@ class CLI {
                 case 'export':
                     $this->exportCards();
                     break;
+
+                case 'update':
+                    $this->update();
+                    break;
                     
                 default:
                     Output::error("Unknown command: $command");
@@ -865,6 +869,10 @@ COMMANDS:
   
   import <board> <file.json>      Bulk import cards from JSON
   export <board>                  Export cards to JSON
+  
+  update                          Update Beckon from the latest GitHub release
+                                  (--check only looks, --yes skips the prompt,
+                                   --rollback restores the previous copy)
   
   help                            Show this help message
   version                         Show version
@@ -1570,6 +1578,62 @@ HELP;
         return $validated;
     }
     
+    // ----------------------------------------
+    // UPDATE (shares the Updater class in index.php)
+    // ----------------------------------------
+
+    private function update() {
+        $indexFile = __DIR__ . '/index.php';
+        if (!file_exists($indexFile)) throw new \Exception("index.php not found next to beckon-cli.php");
+        if (!defined('BECKON_NO_RUN')) define('BECKON_NO_RUN', true);
+        require_once $indexFile;
+        $updater = new \Beckon\Updater(__DIR__);
+        $quiet = $this->args->has('quiet');
+
+        if ($this->args->has('rollback')) {
+            $summary = $updater->summary();
+            if (!$summary['can_rollback']) throw new \Exception("No backup to restore (boards/.updates is empty).");
+            if (!$this->args->has('yes') && !$this->confirm("Restore v{$summary['previous_version']} over the current v{$summary['current']}?")) { Output::info("Cancelled."); return; }
+            $r = $updater->rollback();
+            foreach ($r['versions'] as $file => $v) Output::success("Restored $file to v$v");
+            return;
+        }
+
+        if (!$quiet) Output::info("Checking GitHub for the latest release...");
+        $s = $updater->check(true);
+        if (!empty($s['error']) && empty($s['latest'])) throw new \Exception("Check failed: {$s['error']}");
+        Output::line("  Installed: v{$s['current']}" . (defined('CLI_VERSION') ? "  (CLI v" . CLI_VERSION . ")" : ''));
+        Output::line("  Latest:    v{$s['latest']}" . ($s['published_at'] ? "  (" . date('M j, Y', strtotime($s['published_at'])) . ")" : ''));
+        if ($s['git_checkout']) { Output::warn("This is a git checkout. Update it with git pull instead."); return; }
+        if (!$s['update_available']) { Output::success("Already up to date."); return; }
+        if (!$s['verified']) throw new \Exception("Release v{$s['latest']} publishes no checksum for index.php. Refusing to install an unverified file.");
+        if ($this->args->has('check')) { Output::info("Run 'php beckon-cli.php update' to install v{$s['latest']}."); return; }
+        if (!empty($s['notes']) && !$quiet) {
+            Output::line();
+            foreach (explode("\n", trim($s['notes'])) as $line) Output::dim("  " . $line);
+            Output::line();
+        }
+        if (!$this->args->has('yes') && !$this->confirm("Install v{$s['latest']}?")) { Output::info("Cancelled."); return; }
+
+        // Veto a download that does not parse before it replaces anything.
+        $lint = function ($tmp, $name) {
+            if (!function_exists('exec')) return;
+            $php = PHP_BINARY ?: 'php';
+            @exec(escapeshellarg($php) . ' -l ' . escapeshellarg($tmp) . ' 2>&1', $out, $code);
+            if ($code !== 0) throw new \Exception("Downloaded $name failed php -l: " . implode(' ', $out));
+        };
+        $r = $updater->install($lint);
+        foreach ($r['files'] as $f) Output::success("Updated $f");
+        Output::success("Beckon v{$r['from']} -> v{$r['to']}. The previous copy is in boards/.updates/ (php beckon-cli.php update --rollback).");
+    }
+
+    private function confirm($question) {
+        if (!function_exists('posix_isatty') || !posix_isatty(STDIN)) return false;
+        echo Output::color("? ", 'cyan') . "$question [y/N] ";
+        $answer = trim((string) fgets(STDIN));
+        return in_array(strtolower($answer), ['y', 'yes'], true);
+    }
+
     private function reindexCard($board, $cardId) {
         if (!$this->searchIndex->isAvailable()) return;
         

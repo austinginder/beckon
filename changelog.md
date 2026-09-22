@@ -22,6 +22,7 @@ The rebuild release. Beckon 2.0 drops every third-party library and ships an int
 * **Device sync API:** PIN-based pairing and a pull/push sync endpoint for companion apps.
 * **Beckon CLI:** `beckon-cli.php` for creating, listing, importing and exporting cards. See `cli.md`.
 * **Paste images:** paste a screenshot into the editor to upload it.
+* **A proper updater:** downloads are verified against the sha256 checksum GitHub publishes for each release asset, the outgoing files are kept in `boards/.updates/` and can be restored from the boards screen, release notes show before installing, and the web endpoint no longer accepts a target version so nobody can downgrade a board from the browser. Update checks are cached for a week and only happen while someone has a board open. `php beckon-cli.php update` runs the same updater from a shell (`--check`, `--yes`, `--rollback`), lints the download first, and updates the CLI itself.
 
 ### 🐛 Fixes
 * **WordPress publishing:** images now become proper image blocks in the draft. The transform previously never matched and swapped the id and URL.

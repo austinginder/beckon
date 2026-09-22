@@ -296,6 +296,44 @@ php beckon-cli.php export my-board --list="Done" > done.json
 php beckon-cli.php export my-board --include-archive > full-backup.json
 ```
 
+### Update Commands
+
+#### `update`
+Update Beckon (`index.php` and `beckon-cli.php`) from the latest GitHub release.
+
+```bash
+# See whether a newer release exists (always asks GitHub)
+php beckon-cli.php update --check
+
+# Install it, with a prompt
+php beckon-cli.php update
+
+# Install without a prompt, for cron
+php beckon-cli.php update --yes --quiet
+
+# Put back the copy saved before the last update
+php beckon-cli.php update --rollback
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--check` | Report the installed and latest versions and stop |
+| `--yes` | Skip the confirmation prompt |
+| `--rollback` | Restore the previous copies from `boards/.updates/` |
+
+**Behavior:**
+- Every download is verified against the sha256 checksum GitHub publishes for the release asset (or the release's `SHA256SUMS` file). A release without a checksum is refused.
+- The downloaded file is checked with `php -l` before it replaces anything.
+- The outgoing copies are kept in `boards/.updates/` (the last three) and `--rollback` restores the newest one.
+- A git checkout is left alone; use `git pull` there.
+- The web interface installs through the same code. The CLI is the way to update when the web server cannot write to `index.php`, or to run updates unattended:
+
+```bash
+# weekly, Sunday 04:00
+0 4 * * 0 cd /var/www/beckon && php beckon-cli.php update --yes --quiet
+```
+
 ## JSON Format
 
 ### Import Format
@@ -356,6 +394,7 @@ orange, green, red, yellow, purple, blue, sky, lime, pink, black
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Preview changes without making them |
+| `--yes` | Skip confirmation prompts (`update`) |
 | `--quiet` | Suppress output (useful for scripting) |
 | `--no-color` | Disable colored terminal output |
 | `--help` | Show help message |

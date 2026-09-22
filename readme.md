@@ -29,7 +29,7 @@ Most Kanban tools own your data. Beckon keeps it in plain files you can open in 
 - **Publish to WordPress.** Send a card to any WordPress site as a draft post. Images are uploaded first and the cover becomes the featured image.
 - **Presentation mode.** Show a card full screen, or export it as a standalone HTML file.
 - **Light and dark.** Follows your system by default. Toggle from the top bar.
-- **Self-updating.** Beckon checks GitHub for a new release once a day and can replace itself in one click.
+- **Self-updating.** Verified downloads from GitHub releases, a one-click install with release notes, a restore link, and the same updater as a CLI command for cron or locked-down hosts. Idle installs never phone home.
 - **Command line.** `beckon-cli.php` creates, lists, imports and exports cards for scripting. See [cli.md](cli.md).
 
 ## Install
@@ -95,7 +95,20 @@ A few Trello things do not carry over: custom fields, stickers, votes, Butler au
 
 ## Updating
 
-Beckon looks for a new release once a day. When one exists, the boards screen shows an update button. Installing it downloads the tagged `index.php` from GitHub, keeps a copy of the old file as `index.php.bak`, and reloads.
+Beckon checks GitHub for a new release at most once a week, and only while someone actually has a board open. An idle install never phones home. When a release is available the boards screen shows an update button with the release notes.
+
+Installing downloads the release assets from GitHub, verifies them against the sha256 checksum GitHub publishes for the release, keeps the outgoing copies in `boards/.updates/`, and swaps the files in place. A "Restore" link on the boards screen puts the previous version back.
+
+From a shell, the same updater is available as a command:
+
+```bash
+php beckon-cli.php update --check     # look only
+php beckon-cli.php update             # install, with a prompt
+php beckon-cli.php update --yes       # install unattended, for cron
+php beckon-cli.php update --rollback  # restore the previous copy
+```
+
+Use the command when the web server cannot write to `index.php`. A git checkout is left alone by both paths; update it with `git pull`.
 
 ## License
 
