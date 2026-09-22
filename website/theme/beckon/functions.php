@@ -26,7 +26,13 @@ add_action('wp_enqueue_scripts', function () {
 add_action('wp_head', function () {
     echo '<meta name="color-scheme" content="light dark">' . "\n";
     echo "<script>(function(){try{var t=localStorage.getItem('beckon_site_theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>\n";
-    echo '<link rel="icon" href="' . esc_url(get_template_directory_uri() . '/assets/img/beckon-icon.webp') . '">' . "\n";
+    // Favicon = the brand mark (assets/brand, see /brand/): the amber tile as
+    // SVG, a 32px PNG for browsers that cannot take SVG, and the square tile
+    // for Apple home screens (iOS rounds it itself).
+    $brand = get_template_directory_uri() . '/assets/brand';
+    echo '<link rel="icon" type="image/svg+xml" href="' . esc_url("$brand/beckon-icon.svg") . '">' . "\n";
+    echo '<link rel="icon" type="image/png" sizes="32x32" href="' . esc_url("$brand/favicon-32.png") . '">' . "\n";
+    echo '<link rel="apple-touch-icon" sizes="180x180" href="' . esc_url("$brand/apple-touch-icon.png") . '">' . "\n";
     if (is_front_page()) {
         $img = get_template_directory_uri() . '/assets/img/shot-dark.webp';
         echo '<meta name="description" content="Beckon is a self-hosted Kanban board in a single PHP file. Boards are folders, cards are Markdown, and there is no database, no build step and no third-party JavaScript.">' . "\n";
@@ -205,4 +211,89 @@ if (defined('WP_CLI') && WP_CLI) {
         $n = count(beckon_changelog_releases());
         WP_CLI::success("Changelog refreshed: $n release" . ($n === 1 ? '' : 's') . " parsed" . (defined('BECKON_CHANGELOG_FILE') ? ' (from BECKON_CHANGELOG_FILE)' : ' (from GitHub)') . '.');
     });
+}
+
+/**
+ * Brand page data (page-brand.php): the palette documents the tokens at the
+ * top of style.css, so a token change there is a change here too.
+ */
+function beckon_brand_kit() {
+    return [
+        'lede' => 'The mark, the lockup, the colours and the type that make Beckon look like Beckon. Download the assets below; the rest of this page explains how to use them.',
+        'downloads' => [
+            ['title' => 'Lockup', 'dark' => false, 'preview' => 'beckon-lockup.svg',
+             'desc' => 'Tile and wordmark together, for headers, documents and anywhere there is room.',
+             'files' => [
+                ['beckon-lockup.svg', 'SVG · light'], ['beckon-lockup-dark.svg', 'SVG · dark'],
+                ['beckon-lockup-mono.svg', 'SVG · ink'], ['beckon-lockup-mono-white.svg', 'SVG · white'],
+                ['beckon-lockup-large.png', 'PNG · 544px tall'], ['beckon-lockup-dark-large.png', 'PNG · dark'],
+                ['beckon-lockup-mono-large.png', 'PNG · ink'], ['beckon-lockup-mono-white-large.png', 'PNG · white'],
+             ]],
+            ['title' => 'Mark', 'dark' => false, 'preview' => 'beckon-mark.svg',
+             'desc' => 'The bare beacon. Ink on light surfaces, white on dark, amber where a single colour has to carry the brand.',
+             'files' => [
+                ['beckon-mark.svg', 'SVG · ink'], ['beckon-mark-white.svg', 'SVG · white'], ['beckon-mark-amber.svg', 'SVG · amber'],
+                ['beckon-mark-512.png', 'PNG · 512'], ['beckon-mark-1024.png', 'PNG · 1024'], ['beckon-mark-white-512.png', 'PNG · white 512'],
+             ]],
+            ['title' => 'App icon', 'dark' => false, 'preview' => 'beckon-icon.svg',
+             'desc' => 'Ink beacon on the amber rounded tile. Favicons, app icons and avatars only; it is what the app and this site use.',
+             'files' => [
+                ['beckon-icon.svg', 'SVG'], ['beckon-icon-square.svg', 'SVG · square'],
+                ['beckon-icon-256.png', 'PNG · 256'], ['beckon-icon-512.png', 'PNG · 512'], ['beckon-icon-1024.png', 'PNG · 1024'],
+                ['beckon-icon.webp', 'WebP · 512'], ['favicon-32.png', 'PNG · favicon'], ['apple-touch-icon.png', 'PNG · 180 square'],
+             ]],
+            ['title' => 'Social avatar', 'dark' => false, 'preview' => 'beckon-avatar.svg',
+             'desc' => 'The beacon with extra air so circular crops (X, GitHub, Slack) keep the rays.',
+             'files' => [
+                ['beckon-avatar.svg', 'SVG · amber'], ['beckon-avatar-transparent.svg', 'SVG · transparent'],
+                ['beckon-avatar-1024.png', 'PNG · 1024'], ['beckon-avatar-400.png', 'PNG · 400'], ['beckon-avatar-transparent-1024.png', 'PNG · transparent'],
+             ]],
+        ],
+        'colors' => [
+            'light' => [
+                ['name' => 'Amber',   'var' => '--brand',     'hex' => '#f2b134', 'use' => 'The brand colour. The tile, the primary button, the eyebrow.'],
+                ['name' => 'Ink',     'var' => '--brand-ink', 'hex' => '#1a1f2b', 'use' => 'The beacon and any text set on amber.'],
+                ['name' => 'Accent',  'var' => '--accent',    'hex' => '#3556f5', 'use' => 'Links, focus rings and actions inside the app.'],
+                ['name' => 'Text',    'var' => '--text',      'hex' => '#151a24', 'use' => 'Headings and body text.'],
+                ['name' => 'Text 2',  'var' => '--text-2',    'hex' => '#4b5563', 'use' => 'Secondary text.'],
+                ['name' => 'Muted',   'var' => '--muted',     'hex' => '#7b8494', 'use' => 'Meta, timestamps, placeholders.'],
+                ['name' => 'Page',    'var' => '--bg',        'hex' => '#eef0f4', 'use' => 'Page and board background.'],
+                ['name' => 'Surface', 'var' => '--surface',   'hex' => '#ffffff', 'use' => 'Cards, lists and panels.'],
+                ['name' => 'Line',    'var' => '--line',      'hex' => '#dfe3e9', 'use' => 'Hairlines and card edges.'],
+                ['name' => 'Ok',      'var' => '--ok',        'hex' => '#16a34a', 'use' => 'Done, on time, connected.'],
+                ['name' => 'Warn',    'var' => '--warn',      'hex' => '#d97706', 'use' => 'Due soon.'],
+                ['name' => 'Danger',  'var' => '--danger',    'hex' => '#dc2626', 'use' => 'Overdue and destructive actions.'],
+            ],
+            'dark' => [
+                ['name' => 'Amber',   'var' => '--brand',     'hex' => '#f2b134', 'use' => 'Unchanged. The one colour that does not flip with the scheme.'],
+                ['name' => 'Ink',     'var' => '--brand-ink', 'hex' => '#1a1f2b', 'use' => 'The beacon and any text set on amber.'],
+                ['name' => 'Accent',  'var' => '--accent',    'hex' => '#6b83ff', 'use' => 'Links, focus rings and actions inside the app.'],
+                ['name' => 'Text',    'var' => '--text',      'hex' => '#e8ebf0', 'use' => 'Headings and body text.'],
+                ['name' => 'Text 2',  'var' => '--text-2',    'hex' => '#b6bcc7', 'use' => 'Secondary text.'],
+                ['name' => 'Muted',   'var' => '--muted',     'hex' => '#8b93a1', 'use' => 'Meta, timestamps, placeholders.'],
+                ['name' => 'Page',    'var' => '--bg',        'hex' => '#0f1218', 'use' => 'Page and board background.'],
+                ['name' => 'Surface', 'var' => '--surface',   'hex' => '#171b23', 'use' => 'Cards, lists and panels.'],
+                ['name' => 'Line',    'var' => '--line',      'hex' => '#2a303b', 'use' => 'Hairlines and card edges.'],
+                ['name' => 'Ok',      'var' => '--ok',        'hex' => '#4ade80', 'use' => 'Done, on time, connected.'],
+                ['name' => 'Warn',    'var' => '--warn',      'hex' => '#fbbf24', 'use' => 'Due soon.'],
+                ['name' => 'Danger',  'var' => '--danger',    'hex' => '#f87171', 'use' => 'Overdue and destructive actions.'],
+            ],
+        ],
+        'usage' => [
+            'do' => [
+                'Use the amber tile wherever a square icon is required, and the bare beacon everywhere else.',
+                'Set the bare beacon in ink on light surfaces and in white on dark ones; use the amber beacon only where a single brand colour must carry it.',
+                'Scale the mark as one drawing. The rays and the gallery line are part of it.',
+                'Keep clear space of at least half the tile on every side of the lockup.',
+                'Use the SVG lockups; the wordmark is outlined, so it never depends on an installed font.',
+            ],
+            'dont' => [
+                'Do not redraw, thicken or thin the beacon, or drop the rays to simplify it.',
+                'Do not put the beacon on a tile of any colour other than amber.',
+                'Do not retype the wordmark in another face or weight, and do not add a tagline inside the lockup.',
+                'Do not recolour the amber to match a scheme; it is the same in light and dark.',
+                'Do not use the tile smaller than 16px or the lockup shorter than 24px.',
+            ],
+        ],
+    ];
 }

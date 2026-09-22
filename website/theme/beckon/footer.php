@@ -6,6 +6,7 @@
                 <a href="https://github.com/austinginder/beckon">GitHub</a>
                 <a href="<?php echo esc_url(home_url('/changelog/')); ?>">Changelog</a>
                 <a href="https://github.com/austinginder/beckon/blob/main/cli.md">CLI docs</a>
+                <a href="<?php echo esc_url(home_url('/brand/')); ?>">Brand</a>
                 <a href="https://x.com/austinginder">X</a>
             </div>
             <small>&copy; 2026 <a href="https://austinginder.com">Austin Ginder</a>. MIT licensed.<br>Part of the fleet: <a href="https://captaincore.com">CaptainCore</a> · <a href="https://wpfreighter.com">WP Freighter</a> · <a href="https://cove.run">Cove</a></small>
