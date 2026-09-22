@@ -3344,7 +3344,7 @@ function archiveListHtml(q = '') {
     if (!list.length) return `<div class="empty">${ART.inbox}<div>${(S.board.archive || []).length ? 'No matches.' : 'Archive is empty.'}</div></div>`;
     return list.map((c) => `<button class="pop-item" data-archived="${esc(c.id)}"><span class="grow"><b style="font-weight:600">${esc(c.title)}</b><span class="sub">${(c.labels || []).map((l) => esc(nameOf(l))).join(', ') || 'Archived ' + (c.created_at ? timeAgo(c.created_at) : '')}</span></span>${icon('chev-right', 'sm')}</button>`).join('');
 }
-function openArchivedCard(id) { const idx = (S.board.archive || []).findIndex((c) => c.id === id); if (idx > -1) openCard('archive', idx); }
+function openArchivedCard(id) { const idx = (S.board.archive || []).findIndex((c) => String(c.id) === String(id)); if (idx > -1) openCard('archive', idx); }
 function openArchivePop() {
     const pop = openPop('archive-wrap', 'archive', `
         <div class="pop-search"><input class="field" placeholder="Search archived cards…" data-q></div>
@@ -4195,8 +4195,9 @@ async function goToResult(r) {
     if (!r) return;
     closeLayer('search');
     if (r.board_id !== S.boardId) { S.boardId = r.board_id; await switchBoard(); }
-    for (let l = 0; l < S.board.lists.length; l++) { const c = S.board.lists[l].cards.findIndex((x) => x.id === r.card_id); if (c > -1) { openCard(l, c); return; } }
-    const ai = (S.board.archive || []).findIndex((x) => x.id === r.card_id); if (ai > -1) { openCard('archive', ai); return; }
+    const same = (x) => String(x.id) === String(r.card_id);
+    for (let l = 0; l < S.board.lists.length; l++) { const c = S.board.lists[l].cards.findIndex(same); if (c > -1) { openCard(l, c); return; } }
+    const ai = (S.board.archive || []).findIndex(same); if (ai > -1) { openCard('archive', ai); return; }
     toast('Card not found on the board. Try rebuilding the index.', 'err');
 }
 
