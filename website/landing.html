@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beckon - Where Markdown Charts the Course</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .wave-bottom {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            overflow: hidden;
+            line-height: 0;
+            transform: rotate(180deg);
+        }
+        .wave-bottom svg {
+            position: relative;
+            display: block;
+            width: calc(150% + 1.3px);
+            height: 60px;
+        }
+        .code-pattern {
+            background-image: radial-gradient(#334155 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+    </style>
+    <link rel="icon" href="https://beckon.run/content/16/beckon-icon.webp">
+    <script src="/content/16/mu-plugins/captaincore-analytics.js" data-site="MKGSCHCT" defer></script>
+</head>
+<body class="bg-slate-900 text-slate-300 font-sans antialiased selection:bg-yellow-400 selection:text-slate-900">
+
+    <nav class="fixed w-full z-50 bg-slate-900/90 backdrop-blur border-b border-slate-800">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <a href="#" class="flex items-center gap-3 group">
+                    <img src="https://beckon.run/content/16/uploads/2025/12/beckon-icon.webp" alt="Beckon Logo" class="h-8 w-8 rounded-md shadow-lg shadow-yellow-500/20">
+                    <span class="font-bold text-white tracking-tight text-lg group-hover:text-yellow-400 transition">Beckon</span>
+                </a>
+                
+                <div class="hidden md:block">
+                    <div class="ml-10 flex items-baseline space-x-4">
+                        <a href="#features" class="hover:text-white px-3 py-2 rounded-md text-sm font-medium transition">Features</a>
+                        <a href="#install" class="hover:text-white px-3 py-2 rounded-md text-sm font-medium transition">Install</a>
+                        <a href="https://beckon.run/changelog/" class="hover:text-white px-3 py-2 rounded-md text-sm font-medium transition">Changelog</a>
+                        <a href="https://github.com/austinginder/beckon" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-md text-sm font-bold transition border border-slate-700">GitHub</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="relative pt-32 pb-20 sm:pt-40 sm:pb-24 overflow-hidden">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+            <div class="text-center max-w-3xl mx-auto mb-16">
+                <h1 class="text-4xl sm:text-6xl font-extrabold text-white tracking-tight mb-6">
+                    Where Markdown <br class="hidden sm:block" />
+                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-200">Charts the Course</span>
+                </h1>
+                <p class="text-lg text-slate-400 mb-8 max-w-2xl mx-auto">
+                    A single-file, self-hosted Kanban board designed for developers. 
+                    No database. No complex setup. Just PHP and Markdown files.
+                </p>
+                <div class="flex flex-col sm:flex-row justify-center gap-4">
+                    <a href="#install" class="px-8 py-3.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold shadow-lg shadow-blue-900/50 transition transform hover:-translate-y-0.5">
+                        Download index.php
+                    </a>
+                    <a href="https://github.com/austinginder/beckon" class="px-8 py-3.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700 transition">
+                        View Source
+                    </a>
+                </div>
+                <p class="mt-4 text-xs text-slate-500 font-mono">MIT Licensed • Free • Open Source</p>
+            </div>
+
+            <div class="relative rounded-xl bg-slate-950 border border-slate-800 shadow-2xl shadow-black/50 overflow-hidden transform rotate-1 hover:rotate-0 transition duration-700 ease-out max-w-5xl mx-auto">
+                <div class="bg-slate-900 border-b border-slate-800 p-3 flex items-center gap-4">
+                    <div class="flex gap-1.5">
+                        <div class="w-3 h-3 rounded-full bg-red-500/20"></div>
+                        <div class="w-3 h-3 rounded-full bg-yellow-500/20"></div>
+                        <div class="w-3 h-3 rounded-full bg-green-500/20"></div>
+                    </div>
+                    <div class="h-6 w-32 bg-slate-800 rounded text-[10px] flex items-center justify-center text-slate-500 font-mono">beckon.run</div>
+                </div>
+                <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-900/50 h-[400px]">
+                    <div class="bg-slate-800/50 rounded-lg p-3 border-t-4 border-blue-500 flex flex-col gap-3">
+                        <div class="font-bold text-sm text-slate-300">Backlog</div>
+                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600">
+                            <div class="h-2 w-8 bg-purple-500 rounded-full mb-2"></div>
+                            <div class="h-4 w-3/4 bg-slate-500 rounded mb-2"></div>
+                            <div class="h-3 w-1/2 bg-slate-600 rounded"></div>
+                        </div>
+                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600 opacity-75">
+                            <div class="h-4 w-full bg-slate-500 rounded mb-2"></div>
+                            <div class="h-3 w-1/3 bg-slate-600 rounded"></div>
+                        </div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded-lg p-3 border-t-4 border-blue-500 flex flex-col gap-3">
+                        <div class="font-bold text-sm text-slate-300">In Progress</div>
+                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600 ring-2 ring-blue-500/50">
+                            <div class="h-2 w-8 bg-green-500 rounded-full mb-2"></div>
+                            <div class="h-4 w-5/6 bg-slate-500 rounded mb-2"></div>
+                            <div class="h-20 w-full bg-slate-800 rounded p-2 font-mono text-[8px] text-pink-400">
+                                # Feature<br>
+                                - [x] Markdown support<br>
+                                - [ ] Drag and drop
+                            </div>
+                        </div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded-lg p-3 border-t-4 border-blue-500 flex flex-col gap-3 hidden md:flex">
+                        <div class="font-bold text-sm text-slate-300">Done</div>
+                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600">
+                            <div class="h-4 w-1/2 bg-slate-500 rounded mb-2"></div>
+                            <div class="flex items-center gap-1 text-green-400 text-[10px]">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                3/3 Tasks
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full max-w-4xl opacity-20 pointer-events-none">
+            <div class="absolute top-20 left-10 w-72 h-72 bg-blue-500 rounded-full mix-blend-screen filter blur-3xl animate-pulse"></div>
+            <div class="absolute top-20 right-10 w-72 h-72 bg-purple-500 rounded-full mix-blend-screen filter blur-3xl animate-pulse" style="animation-delay: 2s"></div>
+        </div>
+    </div>
+
+    <div id="features" class="bg-slate-950 py-24 relative">
+        <div class="absolute top-0 w-full overflow-hidden leading-none rotate-180 -mt-1 text-slate-900">
+            <svg class="relative block w-[calc(100%+1.3px)] h-[50px]" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 120" preserveAspectRatio="none">
+                <path d="M321.39,56.44c58-10.79,114.16-30.13,172-41.86,82.39-16.72,168.19-17.73,250.45-.39C823.78,31,906.67,72,985.66,92.83c70.05,18.48,146.53,26.09,214.34,3V0H0V27.35A600.21,600.21,0,0,0,321.39,56.44Z" fill="currentColor"></path>
+            </svg>
+        </div>
+
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 relative">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12">
+                <div class="group">
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-2">Markdown Native</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">
+                        Every card is a Markdown file. Support for drag-and-drop image uploads, live split-pane preview, and interactive checklists.
+                    </p>
+                </div>
+
+                <div class="group">
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-2">Zero Database</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">
+                        No MySQL. No SQLite. Beckon stores your boards as folders and your cards as JSON/MD files. Back up your projects by simply zipping the folder.
+                    </p>
+                </div>
+
+                <div class="group">
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-2">Single File Drop</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">
+                        Deployment is instant. Upload <code class="bg-slate-800 px-1 rounded text-yellow-400">index.php</code> to any PHP-enabled server (Apache, Caddy, Nginx) and you are ready to sail.
+                    </p>
+                </div>
+
+                <div class="group">
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-2">Trello Import</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">
+                        Migrating from the cloud? Import boards via JSON, including support for private attachments via cURL headers. Keep your history, comments, and checklists.
+                    </p>
+                </div>
+
+                <div class="group">
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-2">History & Revisions</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">
+                        Track changes with built-in revision history. Beckon keeps a log of card edits so you can roll back descriptions to previous versions if needed.
+                    </p>
+                </div>
+
+                <div class="group">
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white mb-2">Self-Hosted</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">
+                        Your data stays on your server. Perfect for internal developer tools, private roadmaps, or personal organization.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="install" class="bg-slate-900 py-24 code-pattern border-t border-slate-800">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h2 class="text-3xl font-bold text-white mb-8">All hands on deck.</h2>
+            <p class="text-slate-400 mb-8">No build steps. No npm install. Just raw PHP power.</p>
+            
+            <div class="bg-slate-950 rounded-xl shadow-2xl overflow-hidden border border-slate-800 text-left mx-auto max-w-3xl">
+                <div class="flex items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
+                    <div class="flex space-x-2">
+                        <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                        <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+                        <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    </div>
+                    <div class="ml-4 text-xs text-slate-400 font-mono">Terminal</div>
+                </div>
+                <div class="p-6 font-mono text-sm sm:text-base">
+                    <div class="flex gap-2 mb-2">
+                        <span class="text-green-400">$</span>
+                        <span class="text-slate-300">mkdir beckon && cd beckon</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <span class="text-green-400">$</span>
+                        <span class="text-slate-300">curl -OL https://github.com/austinginder/beckon/releases/latest/download/index.php</span>
+                    </div>
+                    <div class="flex gap-2 mt-4 opacity-50">
+                        <span class="text-slate-500"># Start your server (e.g., Caddy or PHP built-in)</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <span class="text-green-400">$</span>
+                        <span class="text-slate-300">php -S localhost:8000</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-12 flex justify-center gap-6">
+                 <a href="https://github.com/austinginder/beckon/blob/main/index.php" target="_blank" class="text-blue-400 hover:text-blue-300 underline underline-offset-4 decoration-blue-500/30">Download Source</a>
+                 <span class="text-slate-600">•</span>
+                 <a href="https://github.com/austinginder/beckon" target="_blank" class="text-blue-400 hover:text-blue-300 underline underline-offset-4 decoration-blue-500/30">Read Documentation</a>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-slate-950 border-t border-slate-900 pt-16 pb-8">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center">
+            <img src="https://beckon.run/content/16/uploads/2025/12/beckon-icon.webp" alt="Beckon" class="h-10 w-10 rounded-lg mb-6 shadow-lg shadow-yellow-500/20">
+            
+            <p class="text-slate-500 text-sm mb-8 text-center max-w-md">
+                Beckon is a simple, self-hosted project management tool maintained by <a href="https://austinginder.com" class="hover:text-blue-400 transition">Austin Ginder</a>.
+            </p>
+            <div class="flex space-x-6 mb-8">
+                <a href="https://github.com/austinginder/beckon" class="text-slate-400 hover:text-white transition">GitHub</a>
+                <a href="https://twitter.com/austinginder" class="text-slate-400 hover:text-white transition">Twitter</a>
+            </div>
+            <div class="text-slate-600 text-xs text-center">
+                &copy; 2025 <a href="https://austinginder.com" class="hover:text-blue-400 transition">Austin Ginder</a>. Licensed under MIT. <br>
+                Part of the fleet: 
+                <a href="https://captaincore.com" class="hover:text-blue-400 transition">CaptainCore</a> • 
+                <a href="https://wpfreighter.com" class="hover:text-blue-400 transition">WP Freighter</a> • 
+                <a href="https://cove.run" class="hover:text-blue-400 transition">Cove</a>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
