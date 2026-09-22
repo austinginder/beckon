@@ -2559,7 +2559,8 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .ov-card small { font-family: var(--mono); color: var(--muted); font-size: 11px; }
 .ov-card.new { border-style: dashed; border-width: 1.5px; border-color: var(--line-strong); background: transparent; align-items: center; justify-content: center; color: var(--muted); font-weight: 700; gap: 8px; box-shadow: none; }
 .ov-card.new:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.ov-card .ov-art { position: absolute; right: 12px; top: 12px; opacity: .18; width: 60px; height: 60px; }
+.ov-card .ov-art { position: absolute; right: 14px; top: 14px; opacity: .14; width: 28px; height: 28px; }
+.ov-card > b { padding-right: 40px; }
 .overview-foot { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 16px; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); border-top: 1px solid var(--line); }
 .overview-foot a { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; } .overview-foot a:hover { color: var(--text); }
 .overview-foot .update { color: var(--warn); background: var(--warn-soft); padding: 4px 10px; border-radius: 999px; display: inline-flex; align-items: center; gap: 6px; }
