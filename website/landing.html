@@ -3,263 +3,592 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Beckon - Where Markdown Charts the Course</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        .wave-bottom {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            overflow: hidden;
-            line-height: 0;
-            transform: rotate(180deg);
-        }
-        .wave-bottom svg {
-            position: relative;
-            display: block;
-            width: calc(150% + 1.3px);
-            height: 60px;
-        }
-        .code-pattern {
-            background-image: radial-gradient(#334155 1px, transparent 1px);
-            background-size: 20px 20px;
-        }
-    </style>
+    <meta name="color-scheme" content="light dark">
+    <title>Beckon - Where Markdown charts the course</title>
+    <meta name="description" content="Beckon is a self-hosted Kanban board in a single PHP file. Boards are folders, cards are Markdown, and there is no database, no build step and no third-party JavaScript.">
+    <meta property="og:title" content="Beckon - a Kanban board in one PHP file">
+    <meta property="og:description" content="Boards are folders, cards are Markdown. No database, no build step, no third-party JavaScript.">
+    <meta property="og:image" content="https://beckon.run/content/16/img/shot-dark.webp">
+    <meta property="og:url" content="https://beckon.run/">
+    <meta name="twitter:card" content="summary_large_image">
     <link rel="icon" href="https://beckon.run/content/16/beckon-icon.webp">
     <script src="/content/16/mu-plugins/captaincore-analytics.js" data-site="MKGSCHCT" defer></script>
-</head>
-<body class="bg-slate-900 text-slate-300 font-sans antialiased selection:bg-yellow-400 selection:text-slate-900">
+    <script>(function(){try{var t=localStorage.getItem('beckon_site_theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+    <style>
+        :root {
+            --bg: #eef0f4; --bg-2: #e6e9ee; --surface: #ffffff; --surface-2: #f6f7f9; --surface-3: #eceef2;
+            --text: #151a24; --text-2: #4b5563; --muted: #7b8494; --line: #dfe3e9; --line-strong: #c9cfd8;
+            --accent: #3556f5; --accent-2: #2440d6; --accent-soft: #e6eaff; --accent-ink: #1f38b8;
+            --brand: #f2b134; --brand-ink: #1a1f2b; --amber-ink: #b97b0a; --ok: #16a34a; --warn: #d97706; --warn-soft: #fef3c7; --danger: #dc2626; --danger-soft: #fee2e2;
+            --shadow: 0 30px 80px rgba(16,24,40,.18), 0 4px 12px rgba(16,24,40,.08);
+            --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            --emoji: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+            --c-red: #ef4444; --c-orange: #f97316; --c-yellow: #eab308; --c-green: #22c55e; --c-teal: #14b8a6; --c-blue: #3b82f6; --c-purple: #a855f7; --c-pink: #ec4899; --c-slate: #64748b;
+            color-scheme: light;
+        }
+        @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+            --bg: #0f1218; --bg-2: #0a0d12; --surface: #171b23; --surface-2: #1d222c; --surface-3: #252b36;
+            --text: #e8ebf0; --text-2: #b6bcc7; --muted: #8b93a1; --line: #2a303b; --line-strong: #3a4150;
+            --accent: #6b83ff; --accent-2: #8597ff; --accent-soft: #232a4a; --accent-ink: #b9c4ff; --amber-ink: #f2b134; --ok: #4ade80; --warn: #fbbf24; --warn-soft: #3a2a08; --danger: #f87171; --danger-soft: #3b1414;
+            --shadow: 0 40px 100px rgba(0,0,0,.55), 0 4px 12px rgba(0,0,0,.3); color-scheme: dark; } }
+        :root[data-theme="dark"] {
+            --bg: #0f1218; --bg-2: #0a0d12; --surface: #171b23; --surface-2: #1d222c; --surface-3: #252b36;
+            --text: #e8ebf0; --text-2: #b6bcc7; --muted: #8b93a1; --line: #2a303b; --line-strong: #3a4150;
+            --accent: #6b83ff; --accent-2: #8597ff; --accent-soft: #232a4a; --accent-ink: #b9c4ff; --amber-ink: #f2b134; --ok: #4ade80; --warn: #fbbf24; --warn-soft: #3a2a08; --danger: #f87171; --danger-soft: #3b1414;
+            --shadow: 0 40px 100px rgba(0,0,0,.55), 0 4px 12px rgba(0,0,0,.3); color-scheme: dark; }
 
-    <nav class="fixed w-full z-50 bg-slate-900/90 backdrop-blur border-b border-slate-800">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
-                <a href="#" class="flex items-center gap-3 group">
-                    <img src="https://beckon.run/content/16/uploads/2025/12/beckon-icon.webp" alt="Beckon Logo" class="h-8 w-8 rounded-md shadow-lg shadow-yellow-500/20">
-                    <span class="font-bold text-white tracking-tight text-lg group-hover:text-yellow-400 transition">Beckon</span>
-                </a>
-                
-                <div class="hidden md:block">
-                    <div class="ml-10 flex items-baseline space-x-4">
-                        <a href="#features" class="hover:text-white px-3 py-2 rounded-md text-sm font-medium transition">Features</a>
-                        <a href="#install" class="hover:text-white px-3 py-2 rounded-md text-sm font-medium transition">Install</a>
-                        <a href="https://beckon.run/changelog/" class="hover:text-white px-3 py-2 rounded-md text-sm font-medium transition">Changelog</a>
-                        <a href="https://github.com/austinginder/beckon" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-md text-sm font-bold transition border border-slate-700">GitHub</a>
-                    </div>
-                </div>
+        *, *::before, *::after { box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body { margin: 0; background: var(--bg); color: var(--text-2); font-family: var(--font); font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+        a { color: var(--accent-ink); text-decoration: none; }
+        h1, h2, h3 { color: var(--text); letter-spacing: -.02em; line-height: 1.15; margin: 0; }
+        p { margin: 0; }
+        code { font-family: var(--mono); font-size: .92em; background: var(--surface-3); padding: .12em .4em; border-radius: 5px; color: var(--accent-ink); }
+        kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--surface-3); color: var(--muted); border: 1px solid var(--line); }
+        ::selection { background: var(--brand); color: var(--brand-ink); }
+        .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+        .btn { display: inline-flex; align-items: center; gap: 8px; height: 46px; padding: 0 20px; border-radius: 10px; font-weight: 700; font-size: 15px; border: 1px solid var(--line-strong); color: var(--text); background: var(--surface); transition: transform .12s, background .12s; cursor: pointer; font-family: inherit; }
+        .btn:hover { transform: translateY(-1px); background: var(--surface-2); }
+        .btn.brand { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); box-shadow: 0 10px 30px rgba(242,177,52,.25); }
+        .btn svg { width: 18px; height: 18px; }
+        .i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+        .i.sm { width: 14px; height: 14px; } .i.xs { width: 12px; height: 12px; }
+        .pill { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px 0 6px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--text-2); }
+        .pill b { background: var(--brand); color: var(--brand-ink); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+        .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--brand); font-weight: 700; margin-bottom: 14px; display: block; }
+        .lead { font-size: 18px; color: var(--muted); max-width: 640px; }
+        section { padding: 96px 0; }
+        .center { text-align: center; } .center .lead { margin-left: auto; margin-right: auto; }
+        .try { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+        .try i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: block; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+        .bg-red { background: var(--c-red); } .bg-orange { background: var(--c-orange); } .bg-yellow { background: var(--c-yellow); } .bg-green { background: var(--c-green); } .bg-teal { background: var(--c-teal); } .bg-blue { background: var(--c-blue); } .bg-purple { background: var(--c-purple); } .bg-pink { background: var(--c-pink); } .bg-slate { background: var(--c-slate); }
+
+        /* Nav */
+        nav { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--surface) 82%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+        nav .wrap { display: flex; align-items: center; height: 64px; gap: 8px; }
+        .logo { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 800; font-size: 17px; }
+        .logo svg { width: 30px; height: 30px; border-radius: 8px; }
+        .links { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+        .links a, .links button { padding: 8px 12px; border-radius: 8px; color: var(--text-2); font-weight: 500; font-size: 14px; background: none; border: 0; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; }
+        .links a:hover, .links button:hover { background: var(--surface-3); color: var(--text); }
+        .links a.gh { border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-weight: 700; margin-left: 8px; }
+
+        /* Hero */
+        .hero { padding: 76px 0 40px; position: relative; overflow: hidden; }
+        .hero::before { content: ""; position: absolute; inset: -20% -10% auto; height: 70%; background: radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 55%), radial-gradient(ellipse at 75% 30%, rgba(242,177,52,.16), transparent 50%); pointer-events: none; }
+        .hero .wrap { position: relative; }
+        .hero-top { text-align: center; max-width: 780px; margin: 0 auto 44px; }
+        .hero h1 { font-size: clamp(40px, 7vw, 68px); font-weight: 800; letter-spacing: -.035em; margin: 22px 0 20px; }
+        .hero h1 span { color: var(--brand); }
+        .hero .lead { margin: 0 auto 30px; font-size: 19px; }
+        .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+        .fine { margin-top: 18px; font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+        .frame { border-radius: 16px; border: 1px solid var(--line-strong); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; position: relative; }
+        .frame-bar { height: 40px; display: flex; align-items: center; gap: 6px; padding: 0 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+        .frame-bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); display: block; }
+        .frame-bar span { margin-left: 10px; font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-3); padding: 2px 10px; border-radius: 6px; }
+        .frame-bar .try { margin-left: auto; }
+        .shot img { display: block; width: 100%; height: auto; }
+
+        /* ---- Live board mock ---- */
+        .mb { display: flex; gap: 14px; padding: 18px; background: var(--bg); overflow-x: auto; min-height: 420px; align-items: flex-start; }
+        .mb-col { flex: 1 1 250px; min-width: 250px; max-width: 360px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; max-height: 100%; }
+        .mb-col.over { border-color: var(--accent); }
+        .mb-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px 14px; font-weight: 700; font-size: 13.5px; color: var(--text); }
+        .mb-head .n { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--muted); background: var(--surface-3); border-radius: 999px; padding: 1px 7px; }
+        .mb-body { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
+        .mc { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px 9px; cursor: grab; user-select: none; -webkit-user-select: none; box-shadow: 0 1px 2px rgba(16,24,40,.06); transition: box-shadow .12s, border-color .12s; touch-action: none; }
+        .mc:hover { border-color: var(--line-strong); box-shadow: 0 4px 12px rgba(16,24,40,.12); }
+        .mc.ghost { position: fixed; z-index: 50; width: 226px; pointer-events: none; transform: rotate(2deg); box-shadow: var(--shadow); cursor: grabbing; }
+        .mc.placeholder { opacity: .35; border-style: dashed; }
+        .mc .labels { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+        .lbl { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: #fff; }
+        .mc .t { font-size: 13.5px; color: var(--text); line-height: 1.4; }
+        .mc .meta { display: flex; align-items: center; gap: 9px; margin-top: 7px; font-size: 11px; font-weight: 600; color: var(--muted); }
+        .mc .meta span { display: inline-flex; align-items: center; gap: 3px; }
+        .mc .meta .done { color: var(--ok); }
+        .mini { width: 34px; height: 4px; background: var(--surface-3); border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; }
+        .mini i { display: block; height: 100%; background: var(--accent); }
+        .chip-date { padding: 1px 6px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); }
+        .chip-date.soon { background: var(--warn-soft); color: var(--warn); } .chip-date.overdue { background: var(--danger-soft); color: var(--danger); }
+        .mb-add { display: flex; align-items: center; gap: 6px; margin: 0 8px 8px; height: 30px; padding: 0 8px; border-radius: 8px; color: var(--muted); font-weight: 600; font-size: 13px; background: none; border: 0; cursor: pointer; font-family: inherit; text-align: left; }
+        .mb-add:hover { background: var(--surface-3); color: var(--text); }
+        .mb-composer { margin: 0 8px 8px; }
+        .mb-composer textarea { width: 100%; border: 1px solid var(--accent); border-radius: 9px; background: var(--surface); padding: 8px 10px; resize: none; font: inherit; font-size: 13px; color: var(--text); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+        .mb-composer .row { display: flex; gap: 6px; margin-top: 6px; align-items: center; font-size: 11.5px; color: var(--muted); }
+        .sbtn { height: 28px; padding: 0 10px; border-radius: 7px; background: var(--accent); color: #fff; border: 0; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+        .xbtn { width: 26px; height: 26px; border-radius: 6px; border: 0; background: none; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+        .xbtn:hover { background: var(--surface-3); color: var(--text); }
+        .mb-hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); padding: 5px 12px; border-radius: 999px; pointer-events: none; white-space: nowrap; }
+
+        /* card editor overlay inside the frame */
+        .mw { position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(4px); display: none; padding: 26px; z-index: 5; }
+        .mw.open { display: block; }
+        .mw-win { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; height: 100%; display: flex; flex-direction: column; box-shadow: var(--shadow); overflow: hidden; }
+        .mw-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 14px 12px 20px; border-bottom: 1px solid var(--line); }
+        .mw-head input { flex: 1; min-width: 0; background: transparent; border: 0; font: inherit; font-size: 20px; font-weight: 800; letter-spacing: -.02em; color: var(--text); outline: none; }
+        .mw-sub { font-size: 12px; color: var(--muted); }
+        .seg { display: inline-flex; background: var(--surface-3); border-radius: 8px; padding: 2px; gap: 2px; }
+        .seg button { height: 26px; padding: 0 9px; border-radius: 6px; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); background: none; border: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+        .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+        .mw-body { flex: 1; min-height: 0; display: flex; }
+        .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .pane + .pane { border-left: 1px solid var(--line); background: var(--surface-2); }
+        .pane-head { height: 32px; display: flex; align-items: center; gap: 10px; padding: 0 14px; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--line); }
+        .pane-head .stat { font-family: var(--mono); font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 11px; padding-left: 10px; border-left: 1px solid var(--line-strong); }
+        .pane textarea { flex: 1; width: 100%; border: 0; resize: none; padding: 14px 16px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--surface); color: var(--text); outline: none; tab-size: 2; }
+        .md { flex: 1; overflow-y: auto; padding: 14px 18px; font-size: 14px; line-height: 1.6; color: var(--text); }
+        .md > :first-child { margin-top: 0; }
+        .md p, .md ul, .md ol, .md blockquote, .md pre { margin: 0 0 .9em; }
+        .md h1, .md h2, .md h3 { margin: 1.2em 0 .4em; }
+        .md h1 { font-size: 1.6em; font-weight: 800; border-bottom: 1px solid var(--line); padding-bottom: .2em; } .md h2 { font-size: 1.3em; } .md h3 { font-size: 1.1em; }
+        .md ul, .md ol { padding-left: 1.5em; }
+        .md li.task { list-style: none; margin-left: -1.4em; } .md li.task input { margin: 0 .5em 0 0; accent-color: var(--accent); cursor: pointer; vertical-align: -1px; } .md li.task.done > span { color: var(--muted); text-decoration: line-through; }
+        .md blockquote { border-left: 3px solid var(--line-strong); padding: .1em 0 .1em 1em; color: var(--muted); }
+        .md pre { background: var(--surface-3); padding: .8em 1em; border-radius: 8px; font-size: .88em; overflow-x: auto; } .md pre code { background: none; padding: 0; color: inherit; }
+        .md a { text-decoration: underline; }
+        .md .emoji { font-family: var(--emoji); }
+        .mw-foot { border-top: 1px solid var(--line); padding: 8px 14px; display: flex; gap: 14px; align-items: center; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); }
+        .mw-foot .prog { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); letter-spacing: 0; text-transform: none; font-weight: 500; }
+        .mw-foot .bar { width: 90px; height: 5px; background: var(--surface-3); border-radius: 999px; overflow: hidden; } .mw-foot .bar i { display: block; height: 100%; background: var(--accent); transition: width .25s; }
+        .mw-side { width: 220px; flex: none; border-left: 1px solid var(--line); background: var(--surface-2); padding: 14px; font-size: 12px; overflow-y: auto; }
+        .mw-side h4 { margin: 0 0 8px; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+        .mw-side .sec { margin-bottom: 16px; }
+        .lt { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 6px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); font-size: 11.5px; font-weight: 600; color: var(--text-2); cursor: pointer; margin: 0 4px 4px 0; font-family: inherit; }
+        .lt i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+        .lt.on { color: #fff; border-color: transparent; }
+        .field { width: 100%; height: 30px; padding: 0 9px; border-radius: 7px; background: var(--surface); border: 1px solid var(--line); color: var(--text); font: inherit; font-size: 12px; }
+
+        /* Facts */
+        .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 40px; }
+        .fact { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+        .fact b { display: block; font-size: 26px; color: var(--text); letter-spacing: -.03em; font-weight: 800; }
+        .fact span { font-size: 13px; color: var(--muted); }
+
+        /* New in 2.0 */
+        .new { background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+        .new-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 56px; align-items: center; }
+        .new h2 { font-size: 36px; margin-bottom: 14px; }
+        .new ul { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 10px; }
+        .new li { display: flex; gap: 12px; align-items: flex-start; font-size: 15px; }
+        .new li svg { margin-top: 3px; color: var(--ok); }
+        .new li b { color: var(--text); }
+        .card-shot { border-radius: 14px; overflow: hidden; border: 1px solid var(--line-strong); box-shadow: var(--shadow); transform: rotate(1.2deg); transition: transform .5s; }
+        .card-shot:hover { transform: rotate(0); }
+        .card-shot img { display: block; width: 100%; height: auto; }
+
+        /* Search demo */
+        .search-demo { max-width: 640px; margin: 36px auto 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+        .sd-in { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+        .sd-in input { flex: 1; background: transparent; border: 0; font: inherit; font-size: 17px; color: var(--text); outline: none; min-width: 0; }
+        .sd-chips { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+        .chip { height: 24px; padding: 0 10px; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 600; background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); white-space: nowrap; cursor: pointer; }
+        .chip.on { background: var(--accent-soft); border-color: transparent; color: var(--accent-ink); }
+        .sd-list { max-height: 300px; overflow-y: auto; padding: 6px; text-align: left; }
+        .sr { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border-radius: 9px; cursor: pointer; }
+        .sr:hover, .sr.sel { background: var(--surface-3); }
+        .sr .g { flex: 1; min-width: 0; } .sr b { display: block; font-size: 13.5px; color: var(--text); font-weight: 600; }
+        .sr .snip { font-size: 12.5px; color: var(--muted); margin-top: 2px; } .sr mark { background: var(--warn-soft); color: var(--text); border-radius: 3px; padding: 0 2px; }
+        .sr .side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; } .sr .side .pill { height: 20px; padding: 0 8px; font-size: 11px; }
+        .sd-foot { display: flex; justify-content: space-between; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+        .sd-empty { padding: 30px; text-align: center; color: var(--muted); font-size: 13.5px; }
+
+        /* Features */
+        .features h2 { font-size: 36px; text-align: center; margin-bottom: 10px; }
+        .features .lead { text-align: center; margin: 0 auto 48px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+        .feat { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; transition: border-color .15s, transform .15s; }
+        .feat:hover { border-color: var(--line-strong); transform: translateY(-2px); }
+        .feat .ic { width: 42px; height: 42px; border-radius: 11px; background: var(--accent-soft); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
+        .feat.amber .ic { background: rgba(242,177,52,.16); color: var(--amber-ink); }
+        .feat h3 { font-size: 17px; margin-bottom: 6px; }
+        .feat p { font-size: 14.5px; color: var(--muted); }
+
+        /* Themes */
+        .themes { background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+        .themes h2 { font-size: 34px; text-align: center; margin-bottom: 10px; }
+        .themes .lead { text-align: center; margin: 0 auto 40px; }
+        .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .duo figure { margin: 0; }
+        .duo figcaption { text-align: center; margin-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+
+        /* Install */
+        .install h2 { font-size: 36px; text-align: center; margin-bottom: 10px; }
+        .install .lead { text-align: center; margin: 0 auto 40px; }
+        .term { max-width: 780px; margin: 0 auto; background: var(--bg-2); border: 1px solid var(--line-strong); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+        .term pre { margin: 0; padding: 22px 24px; font-family: var(--mono); font-size: 14px; line-height: 1.8; color: var(--text-2); overflow-x: auto; }
+        .term .p { color: var(--ok); } .term .c { color: var(--muted); }
+        .install-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 780px; margin: 24px auto 0; }
+        .note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 14.5px; color: var(--muted); }
+        .note b { color: var(--text); display: block; margin-bottom: 4px; }
+        .tree { font-family: var(--mono); font-size: 13px; line-height: 1.75; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; white-space: pre; overflow-x: auto; }
+        .tree span { color: var(--muted); }
+
+        /* Footer */
+        footer { border-top: 1px solid var(--line); padding: 56px 0 36px; text-align: center; }
+        footer .logo { justify-content: center; margin-bottom: 14px; }
+        footer p { color: var(--muted); font-size: 14px; max-width: 460px; margin: 0 auto 22px; }
+        footer .row { display: flex; justify-content: center; gap: 22px; margin-bottom: 26px; }
+        footer .row a { color: var(--text-2); font-weight: 600; font-size: 14px; }
+        footer small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.9; }
+        footer small a { color: var(--text-2); }
+        .toast { position: fixed; right: 18px; bottom: 18px; z-index: 60; background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 10px; font-weight: 600; font-size: 13px; box-shadow: var(--shadow); display: none; }
+
+        @media (max-width: 900px) {
+            section { padding: 64px 0; }
+            .facts { grid-template-columns: repeat(2, 1fr); }
+            .new-grid { grid-template-columns: 1fr; gap: 32px; }
+            .grid { grid-template-columns: 1fr 1fr; }
+            .duo { grid-template-columns: 1fr; }
+            .install-cols { grid-template-columns: 1fr; }
+            .links a:not(.gh) { display: none; }
+            .mw { padding: 0; } .mw-win { border-radius: 0; } .mw-side { display: none; } .pane + .pane { display: none; } .seg { display: none; }
+        }
+        @media (max-width: 560px) {
+            .grid { grid-template-columns: 1fr; }
+            .facts { grid-template-columns: 1fr 1fr; gap: 10px; }
+            .hero { padding-top: 48px; }
+            .card-shot { transform: none; }
+            .mb-col { flex: none; width: 78vw; max-width: none; }
+            .mb-hint { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <nav>
+        <div class="wrap">
+            <a href="/" class="logo" aria-label="Beckon home">
+                <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#f2b134"/><path d="M13 24h6l-1.2-9h-3.6z" fill="#1a1f2b"/><path d="M12.5 13.5h7" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="10.5" r="2.2" fill="#1a1f2b"/><path d="M9.5 9l2.4 1.2M22.5 9l-2.4 1.2M8.2 13.2l2.6-.4M23.8 13.2l-2.6-.4" stroke="#1a1f2b" stroke-width="1.6" stroke-linecap="round"/><path d="M10 25.5h12" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/></svg>
+                Beckon
+            </a>
+            <div class="links">
+                <a href="#new">What's new</a>
+                <a href="#features">Features</a>
+                <a href="#install">Install</a>
+                <a href="/changelog/">Changelog</a>
+                <button id="theme-toggle" title="Toggle light / dark. Right-click for system" aria-label="Toggle theme"></button>
+                <a href="https://github.com/austinginder/beckon" class="gh">GitHub</a>
             </div>
         </div>
     </nav>
 
-    <div class="relative pt-32 pb-20 sm:pt-40 sm:pb-24 overflow-hidden">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-            <div class="text-center max-w-3xl mx-auto mb-16">
-                <h1 class="text-4xl sm:text-6xl font-extrabold text-white tracking-tight mb-6">
-                    Where Markdown <br class="hidden sm:block" />
-                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-200">Charts the Course</span>
-                </h1>
-                <p class="text-lg text-slate-400 mb-8 max-w-2xl mx-auto">
-                    A single-file, self-hosted Kanban board designed for developers. 
-                    No database. No complex setup. Just PHP and Markdown files.
-                </p>
-                <div class="flex flex-col sm:flex-row justify-center gap-4">
-                    <a href="#install" class="px-8 py-3.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold shadow-lg shadow-blue-900/50 transition transform hover:-translate-y-0.5">
-                        Download index.php
-                    </a>
-                    <a href="https://github.com/austinginder/beckon" class="px-8 py-3.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold border border-slate-700 transition">
-                        View Source
-                    </a>
+    <header class="hero">
+        <div class="wrap">
+            <div class="hero-top">
+                <span class="pill"><b>v2.0</b> Rebuilt with zero dependencies</span>
+                <h1>Where Markdown <span>charts the course</span></h1>
+                <p class="lead">A self-hosted Kanban board in a single PHP file. Boards are folders, cards are Markdown, and there is no database, no build step and no third-party JavaScript.</p>
+                <div class="cta">
+                    <a class="btn brand" href="https://github.com/austinginder/beckon/releases/latest/download/index.php"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M4 16.5v2A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5v-2"/></svg> Download index.php</a>
+                    <a class="btn" href="https://github.com/austinginder/beckon"><svg class="i" viewBox="0 0 24 24"><path d="M8.5 8L4 12l4.5 4M15.5 8l4.5 4-4.5 4M13.5 5.5l-3 13"/></svg> View source</a>
                 </div>
-                <p class="mt-4 text-xs text-slate-500 font-mono">MIT Licensed • Free • Open Source</p>
+                <p class="fine">MIT licensed · one file · around 270 KB · PHP 8</p>
             </div>
 
-            <div class="relative rounded-xl bg-slate-950 border border-slate-800 shadow-2xl shadow-black/50 overflow-hidden transform rotate-1 hover:rotate-0 transition duration-700 ease-out max-w-5xl mx-auto">
-                <div class="bg-slate-900 border-b border-slate-800 p-3 flex items-center gap-4">
-                    <div class="flex gap-1.5">
-                        <div class="w-3 h-3 rounded-full bg-red-500/20"></div>
-                        <div class="w-3 h-3 rounded-full bg-yellow-500/20"></div>
-                        <div class="w-3 h-3 rounded-full bg-green-500/20"></div>
-                    </div>
-                    <div class="h-6 w-32 bg-slate-800 rounded text-[10px] flex items-center justify-center text-slate-500 font-mono">beckon.run</div>
-                </div>
-                <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-900/50 h-[400px]">
-                    <div class="bg-slate-800/50 rounded-lg p-3 border-t-4 border-blue-500 flex flex-col gap-3">
-                        <div class="font-bold text-sm text-slate-300">Backlog</div>
-                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600">
-                            <div class="h-2 w-8 bg-purple-500 rounded-full mb-2"></div>
-                            <div class="h-4 w-3/4 bg-slate-500 rounded mb-2"></div>
-                            <div class="h-3 w-1/2 bg-slate-600 rounded"></div>
+            <!-- Live board mock -->
+            <div class="frame" id="frame">
+                <div class="frame-bar"><i></i><i></i><i></i><span>beckon.run/?board=voyage</span><span class="try"><i></i> Live demo, drag a card or open one</span></div>
+                <div class="mb" id="mb"></div>
+                <div class="mb-hint">Nothing here is saved. Reload to reset.</div>
+                <div class="mw" id="mw">
+                    <div class="mw-win">
+                        <div class="mw-head">
+                            <div style="flex:1;min-width:0"><input id="mw-title" spellcheck="false"><div class="mw-sub" id="mw-sub"></div></div>
+                            <div class="seg" id="mw-seg"><button data-v="edit"><svg class="i sm" viewBox="0 0 24 24"><path d="M12 20h8M16.5 3.5a2.1 2.1 0 013 3L8 18l-4 1 1-4L16.5 3.5z"/></svg>Edit</button><button data-v="split" class="on"><svg class="i sm" viewBox="0 0 24 24"><path d="M4 6.5A1.5 1.5 0 015.5 5h13A1.5 1.5 0 0120 6.5v11a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 17.5v-11zM12 5v14"/></svg>Split</button><button data-v="preview"><svg class="i sm" viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6zM14.8 12a2.8 2.8 0 11-5.6 0 2.8 2.8 0 015.6 0z"/></svg>Preview</button></div>
+                            <button class="xbtn" id="mw-close" aria-label="Close"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
                         </div>
-                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600 opacity-75">
-                            <div class="h-4 w-full bg-slate-500 rounded mb-2"></div>
-                            <div class="h-3 w-1/3 bg-slate-600 rounded"></div>
+                        <div class="mw-body">
+                            <div class="pane" id="mw-editor"><div class="pane-head">Markdown<span class="stat" id="mw-stat"></span></div><textarea id="mw-ta" spellcheck="false"></textarea></div>
+                            <div class="pane" id="mw-preview"><div class="pane-head">Preview</div><div class="md" id="mw-md"></div></div>
+                            <aside class="mw-side" id="mw-side"></aside>
                         </div>
-                    </div>
-                    <div class="bg-slate-800/50 rounded-lg p-3 border-t-4 border-blue-500 flex flex-col gap-3">
-                        <div class="font-bold text-sm text-slate-300">In Progress</div>
-                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600 ring-2 ring-blue-500/50">
-                            <div class="h-2 w-8 bg-green-500 rounded-full mb-2"></div>
-                            <div class="h-4 w-5/6 bg-slate-500 rounded mb-2"></div>
-                            <div class="h-20 w-full bg-slate-800 rounded p-2 font-mono text-[8px] text-pink-400">
-                                # Feature<br>
-                                - [x] Markdown support<br>
-                                - [ ] Drag and drop
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-slate-800/50 rounded-lg p-3 border-t-4 border-blue-500 flex flex-col gap-3 hidden md:flex">
-                        <div class="font-bold text-sm text-slate-300">Done</div>
-                        <div class="bg-slate-700 p-3 rounded shadow border border-slate-600">
-                            <div class="h-4 w-1/2 bg-slate-500 rounded mb-2"></div>
-                            <div class="flex items-center gap-1 text-green-400 text-[10px]">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                                3/3 Tasks
-                            </div>
-                        </div>
+                        <div class="mw-foot">Comments <span style="opacity:.6">0</span> &nbsp; Activity <span style="opacity:.6">1</span> &nbsp; Revisions <span style="opacity:.6">0</span><span class="prog" id="mw-prog"></span></div>
                     </div>
                 </div>
+            </div>
+
+            <div class="facts">
+                <div class="fact"><b>1</b><span>file to deploy</span></div>
+                <div class="fact"><b>0</b><span>databases, frameworks or CDNs</span></div>
+                <div class="fact"><b>.md</b><span>one per card, readable anywhere</span></div>
+                <div class="fact"><b>MIT</b><span>free and open source</span></div>
             </div>
         </div>
-        
-        <div class="absolute top-0 left-1/2 -translate-x-1/2 w-full h-full max-w-4xl opacity-20 pointer-events-none">
-            <div class="absolute top-20 left-10 w-72 h-72 bg-blue-500 rounded-full mix-blend-screen filter blur-3xl animate-pulse"></div>
-            <div class="absolute top-20 right-10 w-72 h-72 bg-purple-500 rounded-full mix-blend-screen filter blur-3xl animate-pulse" style="animation-delay: 2s"></div>
+    </header>
+
+    <section class="new" id="new">
+        <div class="wrap new-grid">
+            <div>
+                <span class="eyebrow">New in 2.0</span>
+                <h2>A new interface, built from scratch.</h2>
+                <p class="lead">Version 2 replaces Vue and Tailwind with hand-written CSS and JavaScript, a custom icon set, and Beckon's own Markdown engine. Everything the page needs ships inside <code>index.php</code>. Nothing is fetched from a CDN, so the board works on an airplane and inside a locked-down network.</p>
+                <ul>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>Search across every board.</b> Full-text search over titles, descriptions, comments and labels. Press <kbd>/</kbd>.</span></li>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>Live reload.</b> Edit a card file on disk, or from another tab, and the board updates itself.</span></li>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>Publish to WordPress.</b> Send a card to any WordPress site as a draft, images and cover included.</span></li>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>Light and dark.</b> Follows your system, or pin one. No flash on load.</span></li>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>Emoji everywhere.</b> Type <code>:</code> in the editor or a comment. React to comments with a picker.</span></li>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>A command line.</b> <code>beckon-cli.php</code> creates, lists, imports and exports cards for scripts.</span></li>
+                    <li><svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg><span><b>Built for phones too.</b> Snap-scrolling columns, a full-screen card view, long-press menus.</span></li>
+                </ul>
+            </div>
+            <div class="card-shot"><img src="/content/16/img/shot-card-dark.webp" alt="The card editor with a Markdown pane, live preview, checklist and labels" width="1440" height="900" loading="lazy"></div>
         </div>
-    </div>
+    </section>
 
-    <div id="features" class="bg-slate-950 py-24 relative">
-        <div class="absolute top-0 w-full overflow-hidden leading-none rotate-180 -mt-1 text-slate-900">
-            <svg class="relative block w-[calc(100%+1.3px)] h-[50px]" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 120" preserveAspectRatio="none">
-                <path d="M321.39,56.44c58-10.79,114.16-30.13,172-41.86,82.39-16.72,168.19-17.73,250.45-.39C823.78,31,906.67,72,985.66,92.83c70.05,18.48,146.53,26.09,214.34,3V0H0V27.35A600.21,600.21,0,0,0,321.39,56.44Z" fill="currentColor"></path>
-            </svg>
-        </div>
-
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 relative">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12">
-                <div class="group">
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    </div>
-                    <h3 class="text-xl font-bold text-white mb-2">Markdown Native</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">
-                        Every card is a Markdown file. Support for drag-and-drop image uploads, live split-pane preview, and interactive checklists.
-                    </p>
-                </div>
-
-                <div class="group">
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>
-                    </div>
-                    <h3 class="text-xl font-bold text-white mb-2">Zero Database</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">
-                        No MySQL. No SQLite. Beckon stores your boards as folders and your cards as JSON/MD files. Back up your projects by simply zipping the folder.
-                    </p>
-                </div>
-
-                <div class="group">
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
-                    </div>
-                    <h3 class="text-xl font-bold text-white mb-2">Single File Drop</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">
-                        Deployment is instant. Upload <code class="bg-slate-800 px-1 rounded text-yellow-400">index.php</code> to any PHP-enabled server (Apache, Caddy, Nginx) and you are ready to sail.
-                    </p>
-                </div>
-
-                <div class="group">
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                    </div>
-                    <h3 class="text-xl font-bold text-white mb-2">Trello Import</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">
-                        Migrating from the cloud? Import boards via JSON, including support for private attachments via cURL headers. Keep your history, comments, and checklists.
-                    </p>
-                </div>
-
-                <div class="group">
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    </div>
-                    <h3 class="text-xl font-bold text-white mb-2">History & Revisions</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">
-                        Track changes with built-in revision history. Beckon keeps a log of card edits so you can roll back descriptions to previous versions if needed.
-                    </p>
-                </div>
-
-                <div class="group">
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-lg flex items-center justify-center mb-4 text-blue-400 group-hover:text-white group-hover:bg-blue-600 transition">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
-                    </div>
-                    <h3 class="text-xl font-bold text-white mb-2">Self-Hosted</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">
-                        Your data stays on your server. Perfect for internal developer tools, private roadmaps, or personal organization.
-                    </p>
-                </div>
+    <section class="center" id="search">
+        <div class="wrap">
+            <span class="eyebrow">Search</span>
+            <h2 style="font-size:36px">Find anything, on any board.</h2>
+            <p class="lead" style="margin-top:12px">Every title, description, comment and label is indexed the moment it changes. This one searches a handful of demo cards. Try <kbd>release</kbd> or <kbd>import</kbd>.</p>
+            <div class="search-demo">
+                <div class="sd-in"><svg class="i" viewBox="0 0 24 24" style="color:var(--muted)"><path d="M16.5 16.5L21 21M18 10.5a7.5 7.5 0 11-15 0 7.5 7.5 0 0115 0z"/></svg><input id="sd-q" placeholder="Search cards across all boards…" autocomplete="off"><kbd>esc</kbd></div>
+                <div class="sd-chips" id="sd-chips"></div>
+                <div class="sd-list" id="sd-list"></div>
+                <div class="sd-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> navigate &nbsp; <kbd>↵</kbd> open</span><span>SQLite FTS5</span></div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <div id="install" class="bg-slate-900 py-24 code-pattern border-t border-slate-800">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h2 class="text-3xl font-bold text-white mb-8">All hands on deck.</h2>
-            <p class="text-slate-400 mb-8">No build steps. No npm install. Just raw PHP power.</p>
-            
-            <div class="bg-slate-950 rounded-xl shadow-2xl overflow-hidden border border-slate-800 text-left mx-auto max-w-3xl">
-                <div class="flex items-center px-4 py-2 bg-slate-800 border-b border-slate-700">
-                    <div class="flex space-x-2">
-                        <div class="w-3 h-3 rounded-full bg-red-500"></div>
-                        <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
-                        <div class="w-3 h-3 rounded-full bg-green-500"></div>
-                    </div>
-                    <div class="ml-4 text-xs text-slate-400 font-mono">Terminal</div>
-                </div>
-                <div class="p-6 font-mono text-sm sm:text-base">
-                    <div class="flex gap-2 mb-2">
-                        <span class="text-green-400">$</span>
-                        <span class="text-slate-300">mkdir beckon && cd beckon</span>
-                    </div>
-                    <div class="flex gap-2">
-                        <span class="text-green-400">$</span>
-                        <span class="text-slate-300">curl -OL https://github.com/austinginder/beckon/releases/latest/download/index.php</span>
-                    </div>
-                    <div class="flex gap-2 mt-4 opacity-50">
-                        <span class="text-slate-500"># Start your server (e.g., Caddy or PHP built-in)</span>
-                    </div>
-                    <div class="flex gap-2">
-                        <span class="text-green-400">$</span>
-                        <span class="text-slate-300">php -S localhost:8000</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="mt-12 flex justify-center gap-6">
-                 <a href="https://github.com/austinginder/beckon/blob/main/index.php" target="_blank" class="text-blue-400 hover:text-blue-300 underline underline-offset-4 decoration-blue-500/30">Download Source</a>
-                 <span class="text-slate-600">•</span>
-                 <a href="https://github.com/austinginder/beckon" target="_blank" class="text-blue-400 hover:text-blue-300 underline underline-offset-4 decoration-blue-500/30">Read Documentation</a>
+    <section class="features" id="features">
+        <div class="wrap">
+            <h2>Everything a board needs. Nothing it doesn't.</h2>
+            <p class="lead">Beckon is small on purpose. Each feature earns its place by making the plain files more useful.</p>
+            <div class="grid">
+                <div class="feat amber"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h9"/></svg></div><h3>Markdown native</h3><p>Every card is a <code>.md</code> file. Split-pane editing with live preview, task lists that roll up into progress on the board, tables, code and images.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 13l2.2-7.4A1.5 1.5 0 017.6 4.5h8.8a1.5 1.5 0 011.4 1.1L20 13v5.5a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 18.5V13zM4 13h4.5l1.5 2.5h4l1.5-2.5H20"/></svg></div><h3>Flat files, no database</h3><p>A board is a folder. Back it up by copying it, sync it with Dropbox or Nextcloud, or keep it in git. You can read every card with a text editor.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5L12 5l4.5 4.5M4 16.5v2A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5v-2"/></svg></div><h3>One file to deploy</h3><p>Upload <code>index.php</code> to any host with PHP and open it. No composer, no npm, no build. Updates install themselves from GitHub in one click.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M16.5 16.5L21 21M18 10.5a7.5 7.5 0 11-15 0 7.5 7.5 0 0115 0z"/></svg></div><h3>Search</h3><p>Full-text search across all boards, backed by SQLite FTS5. Filter by board, jump straight to a card, keyboard all the way.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 12a8 8 0 108-8 8 8 0 00-6.3 3.1M4 4v4h4M12 8v4l2.5 2"/></svg></div><h3>Revision history</h3><p>Every change to a description is kept. Scrub back through old versions with a slider and restore any of them.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 12h16M14 6l6 6-6 6"/></svg></div><h3>Drag and drop</h3><p>Reorder cards and lists. Drop or paste images into the editor and they upload beside the board. Set any upload as a card cover.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 5.5h16v10H4zM12 15.5V19M8.5 19h7M9 12l2.5-2.5 2 2L16 8"/></svg></div><h3>Present and export</h3><p>Show a card full screen for a meeting, or export it as a standalone HTML file with the images embedded.</p></div>
+                <div class="feat"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M20 12a8 8 0 01-14.5 4.6M4 12a8 8 0 0114.5-4.6M18.5 3.5v4h-4M5.5 20.5v-4h4"/></svg></div><h3>Trello import</h3><p>Bring over lists, cards, labels, checklists, comments, members and attachments. Private boards work too with a pasted cURL command.</p></div>
+                <div class="feat amber"><div class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 12l16-8-4 16-4-6-8-2z"/></svg></div><h3>Publish to WordPress</h3><p>Draft a post as a card, then send it to any WordPress site. Images are uploaded first and the cover becomes the featured image.</p></div>
             </div>
         </div>
-    </div>
+    </section>
 
-    <footer class="bg-slate-950 border-t border-slate-900 pt-16 pb-8">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center">
-            <img src="https://beckon.run/content/16/uploads/2025/12/beckon-icon.webp" alt="Beckon" class="h-10 w-10 rounded-lg mb-6 shadow-lg shadow-yellow-500/20">
-            
-            <p class="text-slate-500 text-sm mb-8 text-center max-w-md">
-                Beckon is a simple, self-hosted project management tool maintained by <a href="https://austinginder.com" class="hover:text-blue-400 transition">Austin Ginder</a>.
-            </p>
-            <div class="flex space-x-6 mb-8">
-                <a href="https://github.com/austinginder/beckon" class="text-slate-400 hover:text-white transition">GitHub</a>
-                <a href="https://twitter.com/austinginder" class="text-slate-400 hover:text-white transition">Twitter</a>
+    <section class="themes">
+        <div class="wrap">
+            <h2>Two themes, one system.</h2>
+            <p class="lead">Design tokens drive both looks. Beckon follows your operating system by default, and a right-click on the toggle lets you pin light, dark or system. This page works the same way.</p>
+            <div class="duo">
+                <figure><div class="frame shot"><img src="/content/16/img/shot-light.webp" alt="Beckon board in light mode" width="1440" height="900"></div><figcaption>Light</figcaption></figure>
+                <figure><div class="frame shot"><img src="/content/16/img/shot-dark.webp" alt="Beckon board in dark mode" width="1440" height="900"></div><figcaption>Dark</figcaption></figure>
             </div>
-            <div class="text-slate-600 text-xs text-center">
-                &copy; 2025 <a href="https://austinginder.com" class="hover:text-blue-400 transition">Austin Ginder</a>. Licensed under MIT. <br>
-                Part of the fleet: 
-                <a href="https://captaincore.com" class="hover:text-blue-400 transition">CaptainCore</a> • 
-                <a href="https://wpfreighter.com" class="hover:text-blue-400 transition">WP Freighter</a> • 
-                <a href="https://cove.run" class="hover:text-blue-400 transition">Cove</a>
+        </div>
+    </section>
+
+    <section class="install" id="install">
+        <div class="wrap">
+            <h2>All hands on deck.</h2>
+            <p class="lead">Any server with PHP 8 works. Here is the whole install.</p>
+            <div class="term">
+                <div class="frame-bar"><i></i><i></i><i></i><span>Terminal</span></div>
+<pre><span class="p">$</span> mkdir beckon &amp;&amp; cd beckon
+<span class="p">$</span> curl -OL https://github.com/austinginder/beckon/releases/latest/download/index.php
+<span class="c"># any web server works; the PHP built-in one is fine for a laptop</span>
+<span class="p">$</span> php -S localhost:8000</pre>
             </div>
+            <div class="install-cols">
+                <div class="note"><b>Running Cove?</b><code>cove add beckon --plain</code>, then clone the repo into the site folder and open <code>https://beckon.localhost</code>.</div>
+                <div class="note"><b>Keep it private.</b> Beckon has no login of its own. Put it behind HTTP basic auth, a VPN, or a host you control. Search needs the SQLite PDO extension, which most PHP builds include.</div>
+            </div>
+            <div class="tree" style="max-width:780px;margin:24px auto 0">boards/
+  my-project/
+    layout.json            <span>board title, lists, card order, archive</span>
+    2026-09-22_&lt;id&gt;.md     <span>the card, in Markdown</span>
+    2026-09-22_&lt;id&gt;.json   <span>comments, checklists, dates, history</span>
+    uploads/               <span>images and attachments</span></div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="wrap">
+            <a href="/" class="logo" aria-label="Beckon home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#f2b134"/><path d="M13 24h6l-1.2-9h-3.6z" fill="#1a1f2b"/><path d="M12.5 13.5h7" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="10.5" r="2.2" fill="#1a1f2b"/><path d="M9.5 9l2.4 1.2M22.5 9l-2.4 1.2M8.2 13.2l2.6-.4M23.8 13.2l-2.6-.4" stroke="#1a1f2b" stroke-width="1.6" stroke-linecap="round"/><path d="M10 25.5h12" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/></svg></a>
+            <p>Beckon is a small, self-hosted project board made by <a href="https://austinginder.com">Austin Ginder</a>.</p>
+            <div class="row">
+                <a href="https://github.com/austinginder/beckon">GitHub</a>
+                <a href="/changelog/">Changelog</a>
+                <a href="https://github.com/austinginder/beckon/blob/main/cli.md">CLI docs</a>
+                <a href="https://x.com/austinginder">X</a>
+            </div>
+            <small>&copy; 2026 <a href="https://austinginder.com">Austin Ginder</a>. MIT licensed.<br>Part of the fleet: <a href="https://captaincore.com">CaptainCore</a> · <a href="https://wpfreighter.com">WP Freighter</a> · <a href="https://cove.run">Cove</a></small>
         </div>
     </footer>
+    <div class="toast" id="toast"></div>
 
+    <script>
+    (function () {
+        'use strict';
+        const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+        const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+        const EMOJI = { rocket: '🚀', memo: '📝', tada: '🎉', sparkles: '✨', ship: '🚢', anchor: '⚓', compass: '🧭', bug: '🐛', art: '🎨', zap: '⚡', white_check_mark: '✅', thumbsup: '👍', '+1': '👍', fire: '🔥', eyes: '👀', wave: '👋', coffee: '☕', star: '⭐', heart: '❤️', warning: '⚠️' };
+        const ic = (d, cls = 'i sm') => `<svg class="${cls}" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+        const I = { text: 'M4 6.5h16M4 12h16M4 17.5h9', check: 'M12 21a9 9 0 100-18 9 9 0 000 18zM8.5 12.3l2.3 2.3 4.7-4.8', clock: 'M12 21a9 9 0 100-18 9 9 0 000 18zM12 7.5V12l3 2', plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6L6 18', chat: 'M20 12.5c0 3.6-3.6 6.5-8 6.5-1.3 0-2.6-.3-3.7-.7L4 20l1.1-3.3C4.4 15.5 4 14 4 12.5 4 8.9 7.6 6 12 6s8 2.9 8 6.5z', sun: 'M12 16.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zM12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M5.6 18.4l1.3-1.3M17.1 6.9l1.3-1.3', moon: 'M20 14.2A8 8 0 019.8 4a8 8 0 1010.2 10.2z' };
+        const toast = (m) => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display = 'none', 2200); };
+
+        /* ---- Theme (same contract as the app) ---- */
+        const isDark = () => { const t = document.documentElement.getAttribute('data-theme'); return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; };
+        const setTheme = (m) => { if (m === 'system') { document.documentElement.removeAttribute('data-theme'); try { localStorage.removeItem('beckon_site_theme'); } catch (e) {} } else { document.documentElement.setAttribute('data-theme', m); try { localStorage.setItem('beckon_site_theme', m); } catch (e) {} } paintToggle(); };
+        const paintToggle = () => { $('#theme-toggle').innerHTML = ic(isDark() ? I.sun : I.moon, 'i'); };
+        paintToggle();
+        $('#theme-toggle').addEventListener('click', () => setTheme(isDark() ? 'light' : 'dark'));
+        $('#theme-toggle').addEventListener('contextmenu', (e) => { e.preventDefault(); setTheme('system'); toast('Following the system theme'); });
+        matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintToggle);
+
+        /* ---- Tiny Markdown (a subset of the engine in index.php) ---- */
+        function inline(s) {
+            const slots = []; const keep = (h) => { slots.push(h); return `\u0000${slots.length - 1}\u0000`; };
+            s = s.replace(/`([^`]+)`/g, (m, c) => keep(`<code>${esc(c)}</code>`));
+            s = esc(s);
+            s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => keep(`<a href="${u}" target="_blank" rel="noopener">${t}</a>`));
+            s = s.replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, '<strong>$1</strong>').replace(/(?<!\*)\*(?=\S)([^*]+?)(?<=\S)\*(?!\*)/g, '<em>$1</em>').replace(/~~(.+?)~~/g, '<del>$1</del>').replace(/:([a-z0-9_+-]+):/g, (m, k) => EMOJI[k] ? `<span class="emoji">${EMOJI[k]}</span>` : m);
+            return s.replace(/\u0000(\d+)\u0000/g, (m, i) => slots[i]);
+        }
+        function render(text) {
+            const lines = String(text || '').split('\n'); const out = []; let i = 0;
+            while (i < lines.length) {
+                const l = lines[i]; let m;
+                if (!l.trim()) { i++; continue; }
+                if (/^\s*```/.test(l)) { const buf = []; i++; while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]); i++; out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`); continue; }
+                if ((m = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(l))) { out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); i++; continue; }
+                if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(l)) { out.push('<hr>'); i++; continue; }
+                if (/^\s{0,3}>/.test(l)) { const buf = []; while (i < lines.length && /^\s{0,3}>/.test(lines[i])) buf.push(lines[i++].replace(/^\s{0,3}>\s?/, '')); out.push(`<blockquote>${render(buf.join('\n'))}</blockquote>`); continue; }
+                if ((m = /^\s*([-*+]|\d+\.)\s+/.exec(l))) {
+                    const ordered = /\d/.test(m[1]); const items = [];
+                    while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i]) && (/\d/.test(lines[i].match(/^\s*([-*+]|\d+\.)/)[1]) === ordered)) { items.push(lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, '')); i++; }
+                    out.push(`<${ordered ? 'ol' : 'ul'}>${items.map((t) => { const tk = /^\[([ xX])\]\s+/.exec(t); if (tk) { const done = tk[1] !== ' '; return `<li class="task${done ? ' done' : ''}"><input type="checkbox"${done ? ' checked' : ''}><span>${inline(t.slice(tk[0].length))}</span></li>`; } return `<li>${inline(t)}</li>`; }).join('')}</${ordered ? 'ol' : 'ul'}>`); continue;
+                }
+                const buf = []; while (i < lines.length && lines[i].trim() && !/^\s{0,3}(#{1,6}\s|>|```|[-*+]\s|\d+\.\s)/.test(lines[i])) buf.push(lines[i++].trim());
+                out.push(`<p>${buf.map(inline).join('<br>')}</p>`);
+            }
+            return out.join('\n');
+        }
+
+        /* ---- Demo data ---- */
+        const COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'blue', 'purple', 'pink', 'slate'];
+        const today = new Date(); const d = (n) => { const x = new Date(today); x.setDate(x.getDate() + n); return x; };
+        const fmt = (x) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][x.getMonth()] + ' ' + x.getDate();
+        const B = { lists: [
+            { title: 'Charted', cards: [
+                { id: 'c1', title: 'Plot the autumn release', labels: [['blue', 'Feature'], ['orange', 'Priority']], due: d(11), md: '# Release plan\n\nShip **v2.0** with the new interface.\n\n- [x] Design tokens for light and dark\n- [x] Custom SVG icon set\n- [ ] Write the changelog :memo:\n- [ ] Tag the release :rocket:\n\n> Where Markdown charts the course.' },
+                { id: 'c2', title: 'Rewrite the onboarding email', labels: [['teal', 'Writing']], md: 'Keep it to three sentences.\n\n- [ ] Draft\n- [ ] Read it out loud\n- [ ] Send' },
+            ] },
+            { title: 'Underway', cards: [
+                { id: 'c3', title: 'Import the old Trello board', labels: [['purple', 'Migration']], due: d(2), comments: 3, md: 'Attachments and checklists came across cleanly.\n\n```\nphp beckon-cli.php import voyage cards.json\n```\n\nNext: check the cover images.' },
+            ] },
+            { title: 'Docked', cards: [
+                { id: 'c4', title: 'Fix list drag and drop', labels: [['green', 'Bug']], md: 'Done and dusted. :tada:' },
+                { id: 'c5', title: 'Card covers from uploads', labels: [['pink', 'Design']], md: '' },
+            ] },
+        ] };
+        const stats = (md) => { const t = (md.match(/- \[[ xX]\]/g) || []).length, done = (md.match(/- \[[xX]\]/g) || []).length; return { t, done }; };
+        const dueCls = (x) => { if (!x) return ''; const n = Math.round((x - today) / 864e5); return n < 0 ? 'overdue' : n <= 2 ? 'soon' : ''; };
+        const find = (id) => { for (let l = 0; l < B.lists.length; l++) { const c = B.lists[l].cards.findIndex((x) => x.id === id); if (c > -1) return { l, c, card: B.lists[l].cards[c] }; } return null; };
+
+        /* ---- Board render ---- */
+        const mb = $('#mb'); let composer = null;
+        function cardHtml(c) {
+            const s = stats(c.md); const meta = [];
+            if (c.md.trim()) meta.push(`<span>${ic(I.text, 'i xs')}</span>`);
+            if (c.comments) meta.push(`<span>${ic(I.chat, 'i xs')}${c.comments}</span>`);
+            if (s.t) meta.push(`<span class="${s.done === s.t ? 'done' : ''}">${ic(I.check, 'i xs')}${s.done}/${s.t}<i class="mini"><i style="width:${Math.round(s.done / s.t * 100)}%"></i></i></span>`);
+            if (c.due) meta.push(`<span class="chip-date ${dueCls(c.due)}">${ic(I.clock, 'i xs')}${fmt(c.due)}</span>`);
+            return `<div class="mc" data-id="${c.id}">${c.labels.length ? `<div class="labels">${c.labels.map(([col, n]) => `<span class="lbl bg-${col}">${esc(n)}</span>`).join('')}</div>` : ''}<div class="t">${esc(c.title)}</div>${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}</div>`;
+        }
+        function renderBoard() {
+            mb.innerHTML = B.lists.map((list, l) => `<div class="mb-col" data-l="${l}"><div class="mb-head">${esc(list.title)}<span class="n">${list.cards.length}</span></div><div class="mb-body" data-l="${l}">${list.cards.map(cardHtml).join('')}</div>${composer === l ? `<div class="mb-composer"><textarea rows="2" placeholder="Card title…" data-composer></textarea><div class="row"><button class="sbtn" data-add>Add card</button><button class="xbtn" data-cancel>${ic(I.close, 'i sm')}</button><span style="margin-left:auto">Enter to add</span></div></div>` : `<button class="mb-add" data-open-composer="${l}">${ic(I.plus, 'i sm')} Add card</button>`}</div>`).join('');
+            const ta = $('[data-composer]', mb); if (ta) ta.focus();
+        }
+        renderBoard();
+        mb.addEventListener('click', (e) => {
+            const oc = e.target.closest('[data-open-composer]'); if (oc) { composer = +oc.dataset.openComposer; renderBoard(); return; }
+            if (e.target.closest('[data-cancel]')) { composer = null; renderBoard(); return; }
+            if (e.target.closest('[data-add]')) { commit(); return; }
+            const card = e.target.closest('.mc'); if (card && !drag.moved) openCard(card.dataset.id);
+        });
+        mb.addEventListener('keydown', (e) => { if (e.target.matches('[data-composer]')) { if (e.key === 'Enter') { e.preventDefault(); commit(); } if (e.key === 'Escape') { composer = null; renderBoard(); } } });
+        function commit() { const ta = $('[data-composer]', mb); const t = ta && ta.value.trim(); if (!t) { composer = null; renderBoard(); return; } B.lists[composer].cards.push({ id: 'c' + Date.now(), title: t, labels: [], md: '' }); renderBoard(); }
+
+        /* ---- Pointer drag and drop (mouse + touch) ---- */
+        const drag = { el: null, ghost: null, ph: null, id: null, moved: false, sx: 0, sy: 0 };
+        mb.addEventListener('pointerdown', (e) => { const card = e.target.closest('.mc'); if (!card || e.button > 0) return; drag.el = card; drag.id = card.dataset.id; drag.moved = false; drag.sx = e.clientX; drag.sy = e.clientY; });
+        window.addEventListener('pointermove', (e) => {
+            if (!drag.el) return;
+            if (!drag.moved) { if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 6) return; drag.moved = true; const r = drag.el.getBoundingClientRect(); drag.ghost = drag.el.cloneNode(true); drag.ghost.classList.add('ghost'); drag.ghost.style.width = r.width + 'px'; drag.ox = e.clientX - r.left; drag.oy = e.clientY - r.top; document.body.appendChild(drag.ghost); drag.ph = drag.el; drag.el.classList.add('placeholder'); }
+            drag.ghost.style.left = (e.clientX - drag.ox) + 'px'; drag.ghost.style.top = (e.clientY - drag.oy) + 'px';
+            const under = document.elementFromPoint(e.clientX, e.clientY); const col = under && under.closest('.mb-col'); $$('.mb-col.over', mb).forEach((c) => c.classList.remove('over'));
+            if (!col) return; col.classList.add('over'); const body = $('.mb-body', col); const over = under.closest('.mc');
+            if (over && over !== drag.ph) { const r = over.getBoundingClientRect(); body.insertBefore(drag.ph, e.clientY < r.top + r.height / 2 ? over : over.nextSibling); }
+            else if (!over && !body.contains(drag.ph)) body.appendChild(drag.ph);
+            else if (!over && body.contains(drag.ph) && body.lastElementChild !== drag.ph && e.clientY > body.getBoundingClientRect().bottom - 10) body.appendChild(drag.ph);
+        });
+        const endDrag = () => {
+            if (!drag.el) return;
+            if (drag.moved) {
+                const from = find(drag.id); const body = drag.ph.parentElement; const toL = +body.dataset.l; const toC = Array.from(body.children).indexOf(drag.ph);
+                const card = B.lists[from.l].cards.splice(from.c, 1)[0]; B.lists[toL].cards.splice(toC, 0, card);
+                drag.ghost.remove(); $$('.mb-col.over', mb).forEach((c) => c.classList.remove('over')); renderBoard();
+                if (from.l !== toL) toast(`Moved to ${B.lists[toL].title}`);
+            }
+            const was = drag.moved; drag.el = null; drag.ghost = null; drag.ph = null; setTimeout(() => { drag.moved = false; }, 0); drag.moved = was;
+        };
+        window.addEventListener('pointerup', endDrag); window.addEventListener('pointercancel', endDrag);
+
+        /* ---- Card window ---- */
+        const mw = $('#mw'), ta = $('#mw-ta'), mdEl = $('#mw-md'); let active = null, view = 'split';
+        function openCard(id) {
+            const f = find(id); if (!f) return; active = f.card;
+            $('#mw-title').value = active.title; $('#mw-sub').textContent = `in ${B.lists[f.l].title} · created today`; ta.value = active.md; mw.classList.add('open'); paint(); renderSide(); applyView();
+            if (matchMedia('(min-width: 900px)').matches) setTimeout(() => ta.focus({ preventScroll: true }), 30);
+        }
+        function paint() { mdEl.innerHTML = render(active.md) || '<p style="color:var(--muted)">Nothing here yet. Start writing on the left.</p>'; const w = active.md.trim() ? active.md.trim().split(/\s+/).length : 0; $('#mw-stat').textContent = w ? `${w} words · ${Math.max(1, Math.ceil(w / 200))} min read` : ''; const s = stats(active.md); $('#mw-prog').innerHTML = s.t ? `${s.done}/${s.t} tasks <span class="bar"><i style="width:${Math.round(s.done / s.t * 100)}%"></i></span>` : ''; }
+        function renderSide() {
+            $('#mw-side').innerHTML = `<div class="sec"><h4>Labels</h4>${COLORS.map((c) => { const has = active.labels.find((l) => l[0] === c); return `<button class="lt ${has ? 'on bg-' + c : ''}" data-color="${c}"><i class="bg-${c}"></i>${esc(has ? has[1] : c[0].toUpperCase() + c.slice(1))}</button>`; }).join('')}</div><div class="sec"><h4>Due</h4><input type="date" class="field" value="${active.due ? active.due.toISOString().slice(0, 10) : ''}" data-due></div><div class="sec"><h4>Checklists</h4><div style="color:var(--muted)">Task lists in the description count here too.</div></div>`;
+        }
+        ta.addEventListener('input', () => { active.md = ta.value; paint(); renderBoard(); });
+        mdEl.addEventListener('click', (e) => { if (!e.target.matches('input[type=checkbox]')) return; const all = $$('input[type=checkbox]', mdEl); const idx = all.indexOf(e.target); let n = 0; active.md = active.md.replace(/^(\s*[-*+]\s+\[)([ xX])(\])/gm, (m, p, s, sf) => n++ === idx ? p + (s === ' ' ? 'x' : ' ') + sf : m); ta.value = active.md; paint(); renderBoard(); });
+        $('#mw-title').addEventListener('input', (e) => { active.title = e.target.value; renderBoard(); });
+        $('#mw-side').addEventListener('click', (e) => { const b = e.target.closest('[data-color]'); if (!b) return; const c = b.dataset.color; const i = active.labels.findIndex((l) => l[0] === c); if (i > -1) active.labels.splice(i, 1); else active.labels.push([c, c[0].toUpperCase() + c.slice(1)]); renderSide(); renderBoard(); });
+        $('#mw-side').addEventListener('change', (e) => { if (e.target.matches('[data-due]')) { active.due = e.target.value ? new Date(e.target.value + 'T12:00:00') : null; renderBoard(); } });
+        $('#mw-close').addEventListener('click', () => mw.classList.remove('open'));
+        mw.addEventListener('click', (e) => { if (e.target === mw) mw.classList.remove('open'); });
+        $('#mw-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (!b) return; view = b.dataset.v; applyView(); });
+        function applyView() { $$('#mw-seg button').forEach((b) => b.classList.toggle('on', b.dataset.v === view)); $('#mw-editor').style.display = view === 'preview' ? 'none' : ''; $('#mw-preview').style.display = view === 'edit' ? 'none' : ''; }
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && mw.classList.contains('open')) mw.classList.remove('open'); });
+
+        /* ---- Search demo ---- */
+        const CORPUS = [
+            { t: 'Plot the autumn release', b: 'Voyage', s: '# Release plan Ship v2.0 with the new interface. Design tokens for light and dark, custom SVG icon set, write the changelog, tag the release.', l: ['blue', 'orange'] },
+            { t: 'Import the old Trello board', b: 'Voyage', s: 'Attachments and checklists came across cleanly. Next: check the cover images.', l: ['purple'] },
+            { t: 'Release a WordPress plugin', b: 'Dreams', s: 'Publish the first version to the directory and write the release post.', l: ['green'] },
+            { t: 'Public beta checklist', b: 'Ideas', s: 'GUI is required for the first public release. Without it, nobody is going to see what the tool can do.', l: ['yellow'] },
+            { t: 'Search across every board', b: 'Roadmap', s: 'Full-text search over titles, descriptions, comments and labels. SQLite FTS5, rebuilt on demand.', l: ['blue'] },
+            { t: 'Rewrite the onboarding email', b: 'Voyage', s: 'Keep it to three sentences. Draft, read it out loud, send.', l: ['teal'] },
+            { t: 'Import attachments from a private board', b: 'Roadmap', s: 'Paste a Copy as cURL command so the importer can download private attachments.', l: ['purple', 'red'] },
+            { t: 'Presentation mode', b: 'Roadmap', s: 'Show a card full screen for a meeting, or export it as a standalone HTML file.', l: ['pink'] },
+            { t: 'Kanban for the release train', b: 'Ideas', s: 'One list per sprint, one card per ticket, due dates color by urgency.', l: ['orange'] },
+        ];
+        const boards = ['All boards', ...Array.from(new Set(CORPUS.map((c) => c.b)))]; let sdBoard = 'All boards', sel = 0;
+        $('#sd-chips').innerHTML = boards.map((b) => `<button class="chip ${b === sdBoard ? 'on' : ''}" data-b="${esc(b)}">${esc(b)}</button>`).join('');
+        const q = $('#sd-q'), list = $('#sd-list');
+        const mark = (s, terms) => { let h = esc(s); terms.forEach((t) => { h = h.replace(new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'), '<mark>$1</mark>'); }); return h; };
+        function search() {
+            const terms = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+            if (!terms.length) { list.innerHTML = `<div class="sd-empty">Type to search titles, descriptions, comments and labels.</div>`; return; }
+            const hits = CORPUS.filter((c) => (sdBoard === 'All boards' || c.b === sdBoard) && terms.every((t) => (c.t + ' ' + c.s).toLowerCase().includes(t)));
+            sel = Math.min(sel, Math.max(0, hits.length - 1));
+            list.innerHTML = hits.length ? hits.map((c, i) => `<div class="sr ${i === sel ? 'sel' : ''}"><div class="g"><b>${mark(c.t, terms)}</b><div class="snip">${mark(c.s, terms)}</div></div><div class="side"><span class="pill">${esc(c.b)}</span><span style="display:flex;gap:3px">${c.l.map((x) => `<i class="bg-${x}" style="width:8px;height:8px;border-radius:50%;display:block"></i>`).join('')}</span></div></div>`).join('') : `<div class="sd-empty">No results for “${esc(q.value.trim())}”.</div>`;
+        }
+        search();
+        q.addEventListener('input', () => { sel = 0; search(); });
+        q.addEventListener('keydown', (e) => { const n = $$('.sr', list).length; if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, n - 1); search(); } else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); search(); } else if (e.key === 'Enter' && n) { toast('In the app this opens the card'); } else if (e.key === 'Escape') { q.value = ''; search(); } });
+        $('#sd-chips').addEventListener('click', (e) => { const b = e.target.closest('[data-b]'); if (!b) return; sdBoard = b.dataset.b; $$('.chip', $('#sd-chips')).forEach((c) => c.classList.toggle('on', c === b)); q.focus(); search(); });
+        list.addEventListener('click', (e) => { if (e.target.closest('.sr')) toast('In the app this opens the card'); });
+    })();
+    </script>
 </body>
 </html>

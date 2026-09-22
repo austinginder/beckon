@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - Unreleased
+
+The rebuild release. Beckon 2.0 drops every third-party library and ships an interface written for it alone, adds search across boards, live reload, WordPress publishing and a command line, and stays one file.
 
 ### 🎨 New interface
 * **Built from scratch, no frameworks:** Vue, Tailwind, markdown-it, dayjs and Tribute are gone. The interface is now hand-written CSS and JavaScript inside `index.php`, with a custom SVG icon set and a custom Markdown engine. Beckon makes no requests to any CDN.
