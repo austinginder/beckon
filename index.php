@@ -2683,6 +2683,20 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .md del { color: var(--muted); }
 .md .emoji { font-family: var(--emoji); }
 
+/* Combobox (replaces native selects) */
+.combo { position: relative; }
+.combo .field { padding-right: 32px; cursor: text; }
+.combo .combo-caret { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; color: var(--muted); border-radius: 5px; pointer-events: none; }
+.combo.open .combo-caret { transform: translateY(-50%) rotate(180deg); }
+.combo-list { position: fixed; z-index: 400; max-height: 260px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-3); padding: 4px; animation: fade .12s ease-out; }
+.combo-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border-radius: 7px; text-align: left; font-size: 13px; color: var(--text); }
+.combo-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-item small { color: var(--muted); font-size: 11.5px; }
+.combo-item.sel, .combo-item:hover { background: var(--surface-3); }
+.combo-item.cur { color: var(--accent-ink); font-weight: 600; }
+.combo-item.cur svg { color: var(--accent); }
+.combo-empty { padding: 8px 10px; font-size: 12.5px; color: var(--muted); }
+
 /* Emoji autocomplete + picker */
 .ac { position: fixed; z-index: 400; width: 240px; max-height: 220px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-3); padding: 4px; }
 .ac button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 9px; border-radius: 6px; text-align: left; font-size: 13px; }
@@ -3120,6 +3134,48 @@ function toast(message, type = 'ok') {
     el.addEventListener('click', () => el.remove());
     box.appendChild(el);
     setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 320); }, 3200);
+}
+
+/* ---------- Combobox ----------
+   comboHtml() renders the input; bindCombo() wires it. Options are [{ value, label, sub? }].
+   Strict: the text must match an option, otherwise it reverts on blur. The list is fixed-
+   positioned on document.body so it escapes scrolling panes and modals. */
+function comboHtml(name, placeholder = '') { return `<div class="combo" data-combo="${esc(name)}"><input class="field" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false"><span class="combo-caret">${icon('chev-down', 'sm')}</span></div>`; }
+function bindCombo(wrap, opts) {
+    const input = $('input', wrap); let options = opts.options || [], value = opts.value ?? '', list = null, sel = 0, filtered = [];
+    const labelOf = (v) => { const o = options.find((x) => String(x.value) === String(v)); return o ? o.label : ''; };
+    const close = () => { if (list) { list.remove(); list = null; } wrap.classList.remove('open'); };
+    const place = () => { if (!list) return; const r = input.getBoundingClientRect(); const h = Math.min(list.scrollHeight + 2, 260); const below = window.innerHeight - r.bottom - 8; const top = below >= Math.min(h, 140) || r.top < h ? r.bottom + 4 : r.top - h - 4; list.style.left = r.left + 'px'; list.style.top = top + 'px'; list.style.width = r.width + 'px'; };
+    const draw = () => {
+        if (!list) { list = document.createElement('div'); list.className = 'combo-list'; document.body.appendChild(list); list.addEventListener('mousedown', (e) => { e.preventDefault(); const b = e.target.closest('[data-i]'); if (b) pick(filtered[+b.dataset.i]); }); wrap.classList.add('open'); }
+        list.innerHTML = filtered.length ? filtered.map((o, i) => `<button class="combo-item ${i === sel ? 'sel' : ''} ${String(o.value) === String(value) ? 'cur' : ''}" data-i="${i}"><span class="grow">${esc(o.label)}${o.sub ? `<br><small>${esc(o.sub)}</small>` : ''}</span>${String(o.value) === String(value) ? icon('check', 'sm') : ''}</button>`).join('') : `<div class="combo-empty">${esc(opts.empty || 'No matches')}</div>`;
+        const s = $('.combo-item.sel', list); if (s) s.scrollIntoView({ block: 'nearest' }); place();
+    };
+    const open = (q = '') => { const t = q.trim().toLowerCase(); filtered = t ? options.filter((o) => (o.label + ' ' + (o.sub || '')).toLowerCase().includes(t)) : options.slice(); sel = Math.max(0, filtered.findIndex((o) => String(o.value) === String(value))); if (t) sel = 0; draw(); };
+    const pick = (o) => { if (!o) return; value = o.value; input.value = o.label; close(); if (opts.onPick) opts.onPick(o.value, o); };
+    input.value = labelOf(value);
+    input.addEventListener('focus', () => { input.select(); open(''); });
+    input.addEventListener('click', () => { if (!list) open(''); });
+    input.addEventListener('input', () => open(input.value));
+    input.addEventListener('keydown', (e) => {
+        if (!list && ['ArrowDown', 'ArrowUp'].includes(e.key)) { e.preventDefault(); open(''); return; }
+        if (!list) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, filtered.length - 1); draw(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+        else if (e.key === 'Enter') { e.preventDefault(); pick(filtered[sel]); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); input.value = labelOf(value); close(); }
+        else if (e.key === 'Tab') close();
+    });
+    input.addEventListener('blur', () => { setTimeout(() => { close(); if (opts.strict !== false) input.value = labelOf(value); }, 120); });
+    const onScroll = (e) => { if (list && !list.contains(e.target)) place(); };
+    window.addEventListener('scroll', onScroll, true); window.addEventListener('resize', place);
+    return {
+        get value() { return value; },
+        set(v) { value = v ?? ''; input.value = labelOf(value); },
+        setOptions(o, v) { options = o || []; if (v !== undefined) value = v; input.value = labelOf(value); },
+        clear() { value = ''; input.value = ''; },
+        focus() { input.focus(); },
+    };
 }
 
 /* ---------- State ---------- */
@@ -3667,22 +3723,25 @@ function openMoveModal(l, c) {
     const card = S.board.lists[l].cards[c]; if (!card) return;
     const el = openLayer('move', `<div class="win ctxwin">${winHead('Move card', 'move')}
         <div class="win-body">
-            <div class="form-row"><span class="label">Board</span><select class="field" data-board>${S.boards.map((b) => `<option value="${esc(b.id)}" ${b.id === S.boardId ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div>
-            <div class="form-row"><span class="label">List</span><select class="field" data-list></select><div class="help hidden" data-note>The card will land at the top of the first list on that board.</div></div>
+            <div class="form-row"><span class="label">Board</span>${comboHtml('board', 'Choose a board…')}</div>
+            <div class="form-row"><span class="label">List</span>${comboHtml('list', 'Choose a list…')}<div class="help hidden" data-note>The card will land at the top of the first list on that board.</div></div>
         </div>
         <div class="win-foot"><button class="btn" data-close="move">Cancel</button><button class="btn primary" data-ok>Move card</button></div></div>`);
     bindClose(el);
-    const listSel = $('[data-list]', el), note = $('[data-note]', el);
+    const note = $('[data-note]', el);
+    const listCombo = bindCombo($('[data-combo="list"]', el), { options: [], empty: 'No lists on that board' });
     const fill = async () => {
-        const bid = $('[data-board]', el).value;
+        const bid = boardCombo.value;
         let lists = bid === S.boardId ? S.board.lists : [];
         if (bid !== S.boardId) { try { lists = (await api('get_board_lists', { board_id: bid })).lists || []; } catch (e) { lists = []; } }
-        listSel.innerHTML = lists.map((x) => `<option value="${esc(x.id)}" ${x.id === S.board.lists[l].id ? 'selected' : ''}>${esc(x.title)}</option>`).join('');
-        listSel.classList.toggle('hidden', !lists.length); note.classList.toggle('hidden', !!lists.length);
+        const cur = bid === S.boardId ? S.board.lists[l].id : (lists[0] ? lists[0].id : '');
+        listCombo.setOptions(lists.map((x) => ({ value: x.id, label: x.title })), cur);
+        $('[data-combo="list"]', el).classList.toggle('hidden', !lists.length); note.classList.toggle('hidden', !!lists.length);
     };
-    fill(); $('[data-board]', el).addEventListener('change', fill);
+    const boardCombo = bindCombo($('[data-combo="board"]', el), { options: S.boards.map((b) => ({ value: b.id, label: b.name, sub: b.id === S.boardId ? 'this board' : '' })), value: S.boardId, onPick: fill });
+    fill();
     $('[data-ok]', el).addEventListener('click', async () => {
-        const bid = $('[data-board]', el).value, lid = listSel.value;
+        const bid = boardCombo.value, lid = listCombo.value;
         try {
             if (bid === S.boardId) {
                 const tl = S.board.lists.findIndex((x) => x.id === lid);
@@ -3968,7 +4027,7 @@ function cwRenderSide() {
                 <div class="side-sec"><h4>Due</h4><input type="date" class="field" value="${esc(card.dueDate || '')}" data-date="dueDate"></div>
             </div>
             <div class="side-sec"><h4>Actions</h4><div class="side-actions">
-                ${otherBoards.length ? `<select class="field" data-move-board><option value="">Move to board…</option>${otherBoards.map((b) => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select>` : ''}
+                ${otherBoards.length ? comboHtml('move-board', 'Move to board…') : ''}
                 <button class="btn wp" data-side="wp">${icon('send', 'sm')} Publish draft to WordPress</button>
                 ${a.l !== 'archive' ? `<button class="btn" data-side="archive">${icon('archive', 'sm')} Archive card</button>` : ''}
                 <button class="btn danger" data-side="delete">${icon('trash', 'sm')} Delete card</button>
@@ -3985,12 +4044,13 @@ function cwRenderSide() {
     on(side, 'click', '.cl-item', (e, t) => { if (e.target.closest('[data-cl-item-del]')) { meta.checklists[+t.dataset.cl].items.splice(+t.dataset.item, 1); } else { const it = meta.checklists[+t.dataset.cl].items[+t.dataset.item]; it.state = it.state === 'complete' ? 'incomplete' : 'complete'; } persist(); updateChecklistStats(); cwRenderSide(); });
     on(side, 'keydown', '[data-cl-add]', (e, t) => { if (e.key !== 'Enter') return; const v = t.value.trim(); if (!v) return; meta.checklists[+t.dataset.clAdd].items.push({ id: Date.now().toString(), name: v, state: 'incomplete' }); persist(); updateChecklistStats(); cwRenderSide(); const inp = $(`[data-cl-add="${t.dataset.clAdd}"]`, $('#cw-side', el)); if (inp) inp.focus(); });
     on(side, 'change', '[data-date]', (e, t) => { card[t.dataset.date] = t.value || null; meta.activity.unshift({ text: `${t.dataset.date === 'dueDate' ? 'Due' : 'Start'} date ${t.value ? 'set to ' + fmtShort(t.value) : 'cleared'}`, date: new Date().toISOString() }); persist(); persistLayout(); cwRenderActivity(); });
-    on(side, 'change', '[data-move-board]', async (e, t) => {
-        const bid = t.value; if (!bid) return; const name = (S.boards.find((b) => b.id === bid) || {}).name || bid;
-        if (!await dialog.confirm({ title: `Move this card to "${name}"?`, ok: 'Move' })) { t.value = ''; return; }
+    const moveWrap = $('[data-combo="move-board"]', side);
+    if (moveWrap) { const mc = bindCombo(moveWrap, { options: otherBoards.map((b) => ({ value: b.id, label: b.name })), onPick: async (bid) => {
+        const name = (S.boards.find((b) => b.id === bid) || {}).name || bid;
+        if (!await dialog.confirm({ title: `Move this card to "${name}"?`, ok: 'Move' })) { mc.clear(); return; }
         try { await api('move_card_to_board', { id: card.id, target_board: bid }); if (a.l === 'archive') S.board.archive.splice(a.c, 1); else S.board.lists[a.l].cards.splice(a.c, 1); saveLocal(); S.active.loading = true; closeCard(); toast(`Moved to ${name}`); }
-        catch (err) { toast('Move failed: ' + err.message, 'err'); t.value = ''; }
-    });
+        catch (err) { toast('Move failed: ' + err.message, 'err'); mc.clear(); }
+    } }); }
     on(side, 'click', '[data-side]', async (e, t) => {
         const act = t.dataset.side;
         if (act === 'wp') openWpModal({ card, description: card.description || '' });
@@ -4266,11 +4326,11 @@ function renderWp(el, target) {
         body.innerHTML = `
             <div class="help" style="margin-bottom:12px">Creates a <b>draft</b> post titled “${esc(target.card.title)}”. Local images are uploaded to the media library first and the cover becomes the featured image.</div>
             <span class="label">Destination</span>
-            <div style="display:flex;gap:8px;margin-bottom:14px"><select class="field" data-site>${S.wp.sites.map((s) => `<option value="${esc(s.id)}" ${s.id === S.wp.selected ? 'selected' : ''}>${esc(s.name)} (${esc(s.url)})</option>`).join('')}</select><button class="btn" data-manage title="Manage sites">${icon('pencil', 'sm')}</button></div>
+            <div style="display:flex;gap:8px;margin-bottom:14px"><div style="flex:1;min-width:0">${comboHtml('site', 'Choose a site…')}</div><button class="btn" data-manage title="Manage sites">${icon('pencil', 'sm')}</button></div>
             <div class="pub-progress hidden" data-prog><div class="txt"><span data-status>Preparing…</span><span data-pct>0%</span></div><div class="progress"><i data-bar style="width:0%"></i></div></div>
             <div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn" data-close="wp">Cancel</button><button class="btn primary" data-publish>${icon('send', 'sm')} Create draft</button></div>`;
-        $('[data-site]', body).addEventListener('change', (e) => { S.wp.selected = e.target.value; saveWp(); });
         if (!S.wp.selected || !S.wp.sites.find((s) => s.id === S.wp.selected)) { S.wp.selected = S.wp.sites[0].id; saveWp(); }
+        bindCombo($('[data-combo="site"]', body), { options: S.wp.sites.map((s) => ({ value: s.id, label: s.name, sub: s.url })), value: S.wp.selected, onPick: (v) => { S.wp.selected = v; saveWp(); } });
         $('[data-manage]', body).addEventListener('click', () => { wpManage = true; renderWp(el, target); });
         $('[data-publish]', body).addEventListener('click', () => publishToWp(el, target));
     } else {
