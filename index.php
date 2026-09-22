@@ -13,6 +13,7 @@ define('BECKON_VERSION', '1.0.0');
 class App {
     private $baseDir;
     private $boardsDir;
+    private $searchIndex;
 
     public function __construct() {
         $this->baseDir = __DIR__;
@@ -22,6 +23,9 @@ class App {
         if (!file_exists($this->boardsDir)) {
             mkdir($this->boardsDir, 0755, true);
         }
+        
+        // Initialize search index
+        $this->searchIndex = new SearchIndex($this->boardsDir);
     }
 
     public function run() {
@@ -32,15 +36,21 @@ class App {
     }
 
     private function handleApi($action) {
+        // SSE endpoint gets special handling (no JSON header, streaming)
+        if ($action === 'events') {
+            $this->handleEvents();
+            exit;
+        }
+
         header('Content-Type: application/json');
 
         try {
             // parse JSON input
             $input = json_decode(file_get_contents('php://input'), true) ?? [];
-            
+
             // Context setup
             $boardId = $_GET['board'] ?? 'main';
-            $boardId = preg_replace('/[^a-z0-9-_]/i', '', $boardId); 
+            $boardId = preg_replace('/[^a-z0-9-_]/i', '', $boardId);
             $boardDir = $boardId ? $this->boardsDir . '/' . $boardId : null;
 
             // Route action to method (e.g., 'list_boards' -> 'actionListBoards')
@@ -58,6 +68,57 @@ class App {
             echo json_encode(['error' => $e->getMessage()]);
         }
         exit; // Stop execution so HTML doesn't render
+    }
+
+    /**
+     * SSE endpoint: watches layout.json for external changes and pushes reload events.
+     * GET /api?action=events&board=<board-id>
+     */
+    private function handleEvents() {
+        $boardId = $_GET['board'] ?? 'main';
+        $boardId = preg_replace('/[^a-z0-9-_]/i', '', $boardId);
+        $layoutPath = $this->boardsDir . '/' . $boardId . '/layout.json';
+
+        if (!file_exists($layoutPath)) {
+            http_response_code(404);
+            echo "Board not found";
+            return;
+        }
+
+        header('Content-Type: text/event-stream');
+        header('Cache-Control: no-cache');
+        header('Connection: keep-alive');
+        header('X-Accel-Buffering: no');
+
+        // Disable output buffering
+        while (ob_get_level()) ob_end_clean();
+
+        $lastMtime = filemtime($layoutPath);
+
+        // Send initial connection event
+        echo "event: connected\ndata: {\"mtime\":{$lastMtime}}\n\n";
+        flush();
+
+        $maxRuntime = 300; // 5 minutes max, then client reconnects
+        $start = time();
+
+        while (time() - $start < $maxRuntime) {
+            if (connection_aborted()) break;
+
+            clearstatcache(true, $layoutPath);
+            $currentMtime = filemtime($layoutPath);
+
+            if ($currentMtime !== $lastMtime) {
+                $lastMtime = $currentMtime;
+                echo "event: board_updated\ndata: {\"mtime\":{$currentMtime}}\n\n";
+                flush();
+            }
+
+            sleep(1);
+        }
+
+        echo "event: timeout\ndata: {}\n\n";
+        flush();
     }
 
     // --- API Actions ---
@@ -316,6 +377,9 @@ class App {
 
         $this->atomicWrite("$targetDir/users.json", (object)$usersMap);
 
+        // Rebuild search index to include imported cards
+        $this->searchIndex->reindexAll();
+
         return ['status' => 'imported', 'board' => $slug];
     }
 
@@ -537,6 +601,539 @@ class App {
         return ['boards' => $boards];
     }
 
+    // --- Search Actions ---
+
+    protected function actionSearch($input) {
+        if (!$this->searchIndex->isAvailable()) {
+            return ['error' => 'Search index not available. SQLite/PDO may not be installed.', 'results' => []];
+        }
+        
+        $query = $input['query'] ?? '';
+        $boardId = $input['board_id'] ?? null;
+        $limit = min((int)($input['limit'] ?? 30), 100);
+        
+        $results = $this->searchIndex->search($query, $boardId, $limit);
+        
+        return [
+            'results' => $results,
+            'query' => $query,
+            'count' => count($results)
+        ];
+    }
+
+    protected function actionReindex() {
+        $result = $this->searchIndex->reindexAll();
+        $stats = $this->searchIndex->getStats();
+        return array_merge($result, ['stats' => $stats]);
+    }
+
+    protected function actionSearchStats() {
+        return $this->searchIndex->getStats();
+    }
+
+    // --- Sync API for Mobile App ---
+    
+    private function getSyncDir() {
+        $dir = $this->boardsDir . '/.sync';
+        if (!file_exists($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        return $dir;
+    }
+    
+    private function getDevicesFile() {
+        return $this->getSyncDir() . '/devices.json';
+    }
+    
+    private function getPendingPairFile() {
+        return $this->getSyncDir() . '/pending_pair.json';
+    }
+    
+    private function loadDevices() {
+        $file = $this->getDevicesFile();
+        if (file_exists($file)) {
+            return json_decode(file_get_contents($file), true) ?? [];
+        }
+        return [];
+    }
+    
+    private function saveDevices($devices) {
+        $this->atomicWrite($this->getDevicesFile(), $devices);
+    }
+    
+    /**
+     * Validates sync authorization header.
+     * Returns device info if valid, throws exception if not.
+     */
+    private function validateSyncAuth() {
+        $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        if (!preg_match('/^Bearer\s+(.+)$/i', $authHeader, $matches)) {
+            throw new Exception("Missing or invalid authorization header", 401);
+        }
+        
+        $token = $matches[1];
+        $tokenHash = hash('sha256', $token);
+        
+        $devices = $this->loadDevices();
+        foreach ($devices as $deviceId => $device) {
+            if ($device['token_hash'] === $tokenHash) {
+                // Update last seen
+                $devices[$deviceId]['last_seen'] = date('c');
+                $this->saveDevices($devices);
+                return $device;
+            }
+        }
+        
+        throw new Exception("Invalid or expired token", 401);
+    }
+    
+    /**
+     * Request device pairing. Generates a 6-digit PIN and outputs to terminal.
+     * POST /api?action=sync_pair_request
+     * Body: { "device_name": "Austin's iPhone", "device_id": "uuid" }
+     */
+    protected function actionSyncPairRequest($input) {
+        $deviceName = $input['device_name'] ?? 'Unknown Device';
+        $deviceId = $input['device_id'] ?? null;
+        
+        if (!$deviceId) {
+            throw new Exception("device_id is required");
+        }
+        
+        // Generate 6-digit PIN
+        $pin = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        
+        // Store pending pairing (expires in 5 minutes)
+        $pending = [
+            'pin' => $pin,
+            'device_id' => $deviceId,
+            'device_name' => $deviceName,
+            'requested_at' => time(),
+            'expires_at' => time() + 300, // 5 minutes
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+        ];
+        
+        $this->atomicWrite($this->getPendingPairFile(), $pending);
+        
+        // Output PIN to terminal/error log for the user to see
+        $message = "\n" . str_repeat("=", 50) . "\n";
+        $message .= "  BECKON PAIRING REQUEST\n";
+        $message .= str_repeat("=", 50) . "\n";
+        $message .= "  Device: $deviceName\n";
+        $message .= "  PIN:    $pin\n";
+        $message .= "  Expires in 5 minutes\n";
+        $message .= str_repeat("=", 50) . "\n";
+        
+        error_log($message);
+        
+        // Also write to a pairing log file that can be tailed
+        $logFile = $this->getSyncDir() . '/pairing.log';
+        file_put_contents($logFile, date('[Y-m-d H:i:s] ') . "Pairing PIN for $deviceName: $pin\n", FILE_APPEND);
+        
+        return [
+            'status' => 'awaiting_pin',
+            'message' => 'Enter the PIN shown on your computer',
+            'expires_in' => 300
+        ];
+    }
+    
+    /**
+     * Confirm pairing with PIN. Returns device token if valid.
+     * POST /api?action=sync_pair_confirm
+     * Body: { "device_id": "uuid", "pin": "123456" }
+     */
+    protected function actionSyncPairConfirm($input) {
+        $deviceId = $input['device_id'] ?? null;
+        $pin = $input['pin'] ?? null;
+        
+        if (!$deviceId || !$pin) {
+            throw new Exception("device_id and pin are required");
+        }
+        
+        $pendingFile = $this->getPendingPairFile();
+        if (!file_exists($pendingFile)) {
+            throw new Exception("No pending pairing request. Please request a new PIN.");
+        }
+        
+        $pending = json_decode(file_get_contents($pendingFile), true);
+        
+        // Validate
+        if ($pending['expires_at'] < time()) {
+            @unlink($pendingFile);
+            throw new Exception("PIN has expired. Please request a new one.");
+        }
+        
+        if ($pending['device_id'] !== $deviceId) {
+            throw new Exception("Device ID mismatch");
+        }
+        
+        if ($pending['pin'] !== $pin) {
+            throw new Exception("Invalid PIN");
+        }
+        
+        // PIN is valid! Generate token
+        $token = bin2hex(random_bytes(32));
+        $tokenHash = hash('sha256', $token);
+        
+        // Store device
+        $devices = $this->loadDevices();
+        $devices[$deviceId] = [
+            'id' => $deviceId,
+            'name' => $pending['device_name'],
+            'token_hash' => $tokenHash,
+            'paired_at' => date('c'),
+            'last_seen' => date('c'),
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+        ];
+        $this->saveDevices($devices);
+        
+        // Clean up pending file
+        @unlink($pendingFile);
+        
+        // Log successful pairing
+        $logFile = $this->getSyncDir() . '/pairing.log';
+        file_put_contents($logFile, date('[Y-m-d H:i:s] ') . "Device paired: {$pending['device_name']}\n", FILE_APPEND);
+        
+        return [
+            'status' => 'paired',
+            'token' => $token,
+            'message' => 'Device successfully paired'
+        ];
+    }
+    
+    /**
+     * List paired devices (for management).
+     * GET /api?action=sync_devices
+     */
+    protected function actionSyncDevices() {
+        $devices = $this->loadDevices();
+        
+        // Remove sensitive data
+        $result = [];
+        foreach ($devices as $id => $device) {
+            $result[] = [
+                'id' => $device['id'],
+                'name' => $device['name'],
+                'paired_at' => $device['paired_at'],
+                'last_seen' => $device['last_seen']
+            ];
+        }
+        
+        return ['devices' => $result];
+    }
+    
+    /**
+     * Revoke a paired device.
+     * POST /api?action=sync_device_revoke
+     * Body: { "device_id": "uuid" }
+     */
+    protected function actionSyncDeviceRevoke($input) {
+        $deviceId = $input['device_id'] ?? null;
+        if (!$deviceId) {
+            throw new Exception("device_id is required");
+        }
+        
+        $devices = $this->loadDevices();
+        if (isset($devices[$deviceId])) {
+            $name = $devices[$deviceId]['name'];
+            unset($devices[$deviceId]);
+            $this->saveDevices($devices);
+            
+            return ['status' => 'revoked', 'message' => "Device '$name' has been unpaired"];
+        }
+        
+        throw new Exception("Device not found");
+    }
+    
+    /**
+     * Get sync manifest - file hashes and timestamps for all boards.
+     * GET /api?action=sync_manifest
+     * Requires auth header.
+     */
+    protected function actionSyncManifest() {
+        $this->validateSyncAuth();
+        
+        $manifest = [
+            'server_time' => date('c'),
+            'server_timestamp' => time(),
+            'boards' => []
+        ];
+        
+        foreach (glob($this->boardsDir . '/*', GLOB_ONLYDIR) as $boardDir) {
+            $boardId = basename($boardDir);
+            
+            // Skip sync directory
+            if ($boardId === '.sync') continue;
+            
+            $boardManifest = [
+                'layout' => $this->getFileManifest("$boardDir/layout.json"),
+                'users' => $this->getFileManifest("$boardDir/users.json"),
+                'cards' => [],
+                'uploads' => []
+            ];
+            
+            // Get all card files
+            foreach (glob("$boardDir/*.md") as $mdFile) {
+                $cardId = basename($mdFile, '.md');
+                $jsonFile = "$boardDir/$cardId.json";
+                
+                $boardManifest['cards'][$cardId] = [
+                    'md' => $this->getFileManifest($mdFile),
+                    'meta' => $this->getFileManifest($jsonFile)
+                ];
+            }
+            
+            // Get uploads
+            $uploadsDir = "$boardDir/uploads";
+            if (is_dir($uploadsDir)) {
+                foreach (glob("$uploadsDir/*") as $file) {
+                    if (is_file($file)) {
+                        $filename = basename($file);
+                        $boardManifest['uploads'][$filename] = $this->getFileManifest($file);
+                    }
+                }
+            }
+
+            // Cast empty arrays to objects for JSON encoding (Swift expects {} not [])
+            if (empty($boardManifest['cards'])) {
+                $boardManifest['cards'] = (object)[];
+            }
+            if (empty($boardManifest['uploads'])) {
+                $boardManifest['uploads'] = (object)[];
+            }
+
+            $manifest['boards'][$boardId] = $boardManifest;
+        }
+        
+        return $manifest;
+    }
+    
+    private function getFileManifest($path) {
+        if (!file_exists($path)) {
+            return null;
+        }
+        
+        return [
+            'hash' => hash_file('sha256', $path),
+            'modified' => filemtime($path),
+            'size' => filesize($path)
+        ];
+    }
+    
+    /**
+     * Pull specific files from server.
+     * POST /api?action=sync_pull
+     * Body: { "files": [{"board": "my-board", "type": "card_md", "id": "card-id"}, ...] }
+     * Requires auth header.
+     */
+    protected function actionSyncPull($input) {
+        $this->validateSyncAuth();
+        
+        $files = $input['files'] ?? [];
+        if (empty($files)) {
+            throw new Exception("No files specified");
+        }
+        
+        $results = [];
+        
+        foreach ($files as $fileReq) {
+            $boardId = $fileReq['board'] ?? null;
+            $type = $fileReq['type'] ?? null;
+            $id = $fileReq['id'] ?? null;
+            
+            if (!$boardId || !$type) {
+                continue;
+            }
+            
+            $boardDir = $this->boardsDir . '/' . $this->slugify($boardId);
+            if (!is_dir($boardDir)) {
+                continue;
+            }
+            
+            $content = null;
+            $path = null;
+            
+            switch ($type) {
+                case 'layout':
+                    $path = "$boardDir/layout.json";
+                    break;
+                case 'users':
+                    $path = "$boardDir/users.json";
+                    break;
+                case 'card_md':
+                    if ($id) $path = "$boardDir/$id.md";
+                    break;
+                case 'card_meta':
+                    if ($id) $path = "$boardDir/$id.json";
+                    break;
+                case 'upload':
+                    if ($id) $path = "$boardDir/uploads/$id";
+                    break;
+            }
+            
+            if ($path && file_exists($path)) {
+                $isText = in_array($type, ['layout', 'users', 'card_md', 'card_meta']);
+                
+                $results[] = [
+                    'board' => $boardId,
+                    'type' => $type,
+                    'id' => $id,
+                    'content' => $isText ? file_get_contents($path) : base64_encode(file_get_contents($path)),
+                    'encoding' => $isText ? 'text' : 'base64',
+                    'hash' => hash_file('sha256', $path),
+                    'modified' => filemtime($path)
+                ];
+            }
+        }
+        
+        return ['files' => $results];
+    }
+    
+    /**
+     * Push changes to server.
+     * POST /api?action=sync_push
+     * Body: { "changes": [{"board": "my-board", "type": "card_md", "id": "card-id", "content": "...", "client_modified": 12345}] }
+     * Requires auth header.
+     */
+    protected function actionSyncPush($input) {
+        $device = $this->validateSyncAuth();
+        
+        $changes = $input['changes'] ?? [];
+        if (empty($changes)) {
+            throw new Exception("No changes specified");
+        }
+        
+        $results = [];
+        
+        foreach ($changes as $change) {
+            $boardId = $change['board'] ?? null;
+            $type = $change['type'] ?? null;
+            $id = $change['id'] ?? null;
+            $content = $change['content'] ?? null;
+            $clientModified = $change['client_modified'] ?? 0;
+            $encoding = $change['encoding'] ?? 'text';
+            
+            if (!$boardId || !$type) {
+                $results[] = ['status' => 'error', 'message' => 'Missing board or type'];
+                continue;
+            }
+            
+            $boardDir = $this->boardsDir . '/' . $this->slugify($boardId);
+            
+            // Create board directory if needed
+            if (!is_dir($boardDir)) {
+                mkdir($boardDir, 0755, true);
+                mkdir("$boardDir/uploads", 0755, true);
+            }
+            
+            $path = null;
+            
+            switch ($type) {
+                case 'layout':
+                    $path = "$boardDir/layout.json";
+                    break;
+                case 'users':
+                    $path = "$boardDir/users.json";
+                    break;
+                case 'card_md':
+                    if ($id) $path = "$boardDir/$id.md";
+                    break;
+                case 'card_meta':
+                    if ($id) $path = "$boardDir/$id.json";
+                    break;
+                case 'upload':
+                    if ($id) {
+                        if (!is_dir("$boardDir/uploads")) mkdir("$boardDir/uploads", 0755, true);
+                        $path = "$boardDir/uploads/$id";
+                    }
+                    break;
+                case 'delete_card':
+                    if ($id) {
+                        @unlink("$boardDir/$id.md");
+                        @unlink("$boardDir/$id.json");
+                        $results[] = ['board' => $boardId, 'type' => $type, 'id' => $id, 'status' => 'deleted'];
+                        continue 2;
+                    }
+                    break;
+            }
+            
+            if (!$path) {
+                $results[] = ['status' => 'error', 'message' => 'Invalid file specification'];
+                continue;
+            }
+            
+            // Last-write-wins conflict resolution
+            $serverModified = file_exists($path) ? filemtime($path) : 0;
+            
+            if ($clientModified >= $serverModified) {
+                // Client is newer or same age, accept the change
+                $data = ($encoding === 'base64') ? base64_decode($content) : $content;
+                
+                if ($type === 'layout' || $type === 'users' || $type === 'card_meta') {
+                    // Parse and re-encode JSON for consistency
+                    $jsonData = json_decode($data, true);
+                    if ($jsonData !== null) {
+                        $this->atomicWrite($path, $jsonData);
+                    } else {
+                        $this->atomicWrite($path, $data);
+                    }
+                } else {
+                    $this->atomicWrite($path, $data);
+                }
+                
+                // Update search index for cards
+                if ($type === 'card_md' || $type === 'card_meta') {
+                    $this->reindexCard($boardId, $boardDir, $id);
+                }
+                
+                $results[] = [
+                    'board' => $boardId,
+                    'type' => $type,
+                    'id' => $id,
+                    'status' => 'accepted',
+                    'hash' => hash_file('sha256', $path),
+                    'modified' => filemtime($path)
+                ];
+            } else {
+                // Server is newer, reject the change
+                $results[] = [
+                    'board' => $boardId,
+                    'type' => $type,
+                    'id' => $id,
+                    'status' => 'conflict',
+                    'message' => 'Server version is newer',
+                    'server_modified' => $serverModified,
+                    'client_modified' => $clientModified
+                ];
+            }
+        }
+        
+        return [
+            'results' => $results,
+            'server_time' => date('c')
+        ];
+    }
+    
+    /**
+     * Quick status check for sync connection.
+     * GET /api?action=sync_status
+     * Requires auth header.
+     */
+    protected function actionSyncStatus() {
+        $device = $this->validateSyncAuth();
+        
+        return [
+            'status' => 'connected',
+            'server_time' => date('c'),
+            'device' => [
+                'id' => $device['id'],
+                'name' => $device['name'],
+                'paired_at' => $device['paired_at']
+            ],
+            'beckon_version' => BECKON_VERSION
+        ];
+    }
+
     protected function actionCreateBoard($input) {
         $title = $input['title'] ?? 'New Board';
         $slug = $input['slug'] ?: $this->slugify($title);
@@ -686,6 +1283,10 @@ class App {
 
     protected function actionSaveCard($input, $boardId, $boardDir) {
         $this->atomicWrite("$boardDir/{$input['id']}.md", $input['description'] ?? '');
+        
+        // Update search index
+        $this->reindexCard($boardId, $boardDir, $input['id']);
+        
         return ['status' => 'saved'];
     }
 
@@ -696,6 +1297,10 @@ class App {
         if (isset($input['labels'])) $meta['labels'] = $input['labels'];
         
         $this->atomicWrite("$boardDir/{$input['id']}.json", $meta);
+        
+        // Update search index
+        $this->reindexCard($boardId, $boardDir, $input['id']);
+        
         return ['status' => 'saved'];
     }
 
@@ -855,6 +1460,9 @@ class App {
                 $this->atomicWrite("$boardDir/layout.json", $sourceLayout);
                 $this->atomicWrite("$targetPath/layout.json", $targetLayout);
 
+                // 6. Update search index (card moved to new board)
+                $this->reindexCard($targetId, $targetPath, $cardId);
+
                 return ['status' => 'moved'];
             });
         });
@@ -870,6 +1478,10 @@ class App {
         $id = $input['id'];
         if (file_exists("$boardDir/$id.md")) unlink("$boardDir/$id.md");
         if (file_exists("$boardDir/$id.json")) unlink("$boardDir/$id.json");
+        
+        // Remove from search index
+        $this->searchIndex->removeCard($id);
+        
         return ['status' => 'deleted'];
     }
 
@@ -1069,6 +1681,288 @@ class App {
         }
         return $all;
     }
+
+    // Helper to reindex a single card
+    private function reindexCard($boardId, $boardDir, $cardId) {
+        if (!$this->searchIndex || !$this->searchIndex->isAvailable()) return;
+        
+        // Get board name
+        $layout = json_decode(@file_get_contents("$boardDir/layout.json"), true);
+        $boardName = $layout['title'] ?? $boardId;
+        
+        // Find card in layout
+        $cardData = null;
+        foreach ($layout['lists'] ?? [] as $list) {
+            foreach ($list['cards'] ?? [] as $card) {
+                if ($card['id'] === $cardId) { $cardData = $card; break 2; }
+            }
+        }
+        if (!$cardData) {
+            foreach ($layout['archive'] ?? [] as $card) {
+                if ($card['id'] === $cardId) { $cardData = $card; break; }
+            }
+        }
+        
+        if (!$cardData) {
+            $this->searchIndex->removeCard($cardId);
+            return;
+        }
+        
+        // Read full content
+        $description = @file_get_contents("$boardDir/$cardId.md") ?: '';
+        $meta = json_decode(@file_get_contents("$boardDir/$cardId.json"), true) ?? [];
+        
+        $this->searchIndex->indexCard(
+            $boardId,
+            $boardName,
+            $cardId,
+            $cardData['title'] ?? '',
+            $description,
+            $meta['comments'] ?? [],
+            $cardData['labels'] ?? []
+        );
+    }
+}
+
+// ========================================
+// SEARCH INDEX (SQLite FTS5)
+// ========================================
+
+class SearchIndex {
+    private $db;
+    private $boardsDir;
+    
+    public function __construct($boardsDir) {
+        $this->boardsDir = $boardsDir;
+        $dbPath = "$boardsDir/search.db";
+        
+        try {
+            $this->db = new \PDO("sqlite:$dbPath");
+            $this->db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            $this->ensureSchema();
+        } catch (\Exception $e) {
+            $this->db = null; // Graceful fallback
+        }
+    }
+    
+    public function isAvailable() {
+        return $this->db !== null;
+    }
+    
+    private function ensureSchema() {
+        // Check if tables exist
+        $result = $this->db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='cards_fts'");
+        if ($result->fetch()) return;
+        
+        // Create FTS5 virtual table
+        $this->db->exec("
+            CREATE VIRTUAL TABLE cards_fts USING fts5(
+                board_id,
+                card_id,
+                title,
+                description,
+                comments,
+                labels,
+                tokenize='porter unicode61'
+            )
+        ");
+        
+        // Metadata tracking table
+        $this->db->exec("
+            CREATE TABLE card_index (
+                card_id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL,
+                board_name TEXT,
+                updated_at INTEGER NOT NULL,
+                title TEXT,
+                has_description INTEGER,
+                label_json TEXT
+            )
+        ");
+        
+        // Schema version
+        $this->db->exec("
+            CREATE TABLE meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ");
+        $this->db->exec("INSERT INTO meta (key, value) VALUES ('version', '1'), ('last_reindex', '0')");
+    }
+    
+    public function indexCard($boardId, $boardName, $cardId, $title, $description, $comments, $labels) {
+        if (!$this->db) return;
+        
+        // Remove existing entry
+        $this->removeCard($cardId);
+        
+        // Prepare text fields
+        $labelText = is_array($labels) ? implode(' ', array_column($labels, 'name')) : '';
+        $commentText = is_array($comments) ? implode("\n", array_column($comments, 'text')) : '';
+        
+        // Insert into FTS
+        $stmt = $this->db->prepare(
+            "INSERT INTO cards_fts (board_id, card_id, title, description, comments, labels) 
+             VALUES (?, ?, ?, ?, ?, ?)"
+        );
+        $stmt->execute([$boardId, $cardId, $title, $description ?? '', $commentText, $labelText]);
+        
+        // Track metadata
+        $stmt = $this->db->prepare(
+            "INSERT OR REPLACE INTO card_index (card_id, board_id, board_name, updated_at, title, has_description, label_json) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)"
+        );
+        $stmt->execute([
+            $cardId, 
+            $boardId, 
+            $boardName,
+            time(), 
+            $title, 
+            !empty(trim($description ?? '')) ? 1 : 0,
+            json_encode($labels)
+        ]);
+    }
+    
+    public function removeCard($cardId) {
+        if (!$this->db) return;
+        $this->db->prepare("DELETE FROM cards_fts WHERE card_id = ?")->execute([$cardId]);
+        $this->db->prepare("DELETE FROM card_index WHERE card_id = ?")->execute([$cardId]);
+    }
+    
+    public function updateBoardName($boardId, $newName) {
+        if (!$this->db) return;
+        $this->db->prepare("UPDATE card_index SET board_name = ? WHERE board_id = ?")->execute([$newName, $boardId]);
+    }
+    
+    public function search($query, $boardId = null, $limit = 50) {
+        if (!$this->db || empty(trim($query))) return [];
+        
+        $ftsQuery = $this->buildFtsQuery($query);
+        
+        $sql = "SELECT 
+                    f.card_id, 
+                    f.board_id,
+                    c.board_name,
+                    c.title,
+                    c.has_description,
+                    c.label_json,
+                    snippet(cards_fts, 3, '<mark>', '</mark>', '...', 48) as snippet,
+                    bm25(cards_fts, 0, 0, 10.0, 5.0, 2.0, 3.0) as rank
+                FROM cards_fts f
+                JOIN card_index c ON f.card_id = c.card_id
+                WHERE cards_fts MATCH ?";
+        
+        $params = [$ftsQuery];
+        
+        if ($boardId) {
+            $sql .= " AND f.board_id = ?";
+            $params[] = $boardId;
+        }
+        
+        $sql .= " ORDER BY rank LIMIT ?";
+        $params[] = $limit;
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $results = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        
+        // Parse label JSON
+        foreach ($results as &$row) {
+            $row['labels'] = json_decode($row['label_json'], true) ?? [];
+            unset($row['label_json']);
+        }
+        
+        return $results;
+    }
+    
+    private function buildFtsQuery($query) {
+        $query = trim($query);
+        
+        // If user uses quotes, pass through for phrase search
+        if (strpos($query, '"') !== false) {
+            return $query;
+        }
+        
+        // Otherwise, make each term a prefix search for partial matching
+        $terms = preg_split('/\s+/', $query);
+        $terms = array_filter($terms, fn($t) => strlen($t) > 0);
+        
+        // Escape FTS5 special characters
+        $escaped = array_map(function($term) {
+            $term = preg_replace('/["\'\(\)\*\:\-]/', '', $term);
+            return $term . '*';
+        }, $terms);
+        
+        return implode(' ', $escaped);
+    }
+    
+    public function reindexAll() {
+        if (!$this->db) return ['status' => 'error', 'message' => 'SQLite not available'];
+        
+        // Clear existing data
+        $this->db->exec("DELETE FROM cards_fts");
+        $this->db->exec("DELETE FROM card_index");
+        
+        $indexed = 0;
+        $boards = glob($this->boardsDir . '/*', GLOB_ONLYDIR);
+        
+        foreach ($boards as $boardDir) {
+            $boardId = basename($boardDir);
+            $layoutPath = "$boardDir/layout.json";
+            
+            if (!file_exists($layoutPath)) continue;
+            
+            $layout = json_decode(file_get_contents($layoutPath), true);
+            if (!$layout) continue;
+            
+            $boardName = $layout['title'] ?? $boardId;
+            
+            // Get all cards (lists + archive)
+            $allCards = [];
+            foreach ($layout['lists'] ?? [] as $list) {
+                foreach ($list['cards'] ?? [] as $card) {
+                    $allCards[] = $card;
+                }
+            }
+            foreach ($layout['archive'] ?? [] as $card) {
+                $allCards[] = $card;
+            }
+            
+            foreach ($allCards as $card) {
+                $cardId = $card['id'];
+                $title = $card['title'] ?? '';
+                $labels = $card['labels'] ?? [];
+                
+                // Read description
+                $description = @file_get_contents("$boardDir/$cardId.md") ?: '';
+                
+                // Read comments
+                $meta = json_decode(@file_get_contents("$boardDir/$cardId.json"), true) ?? [];
+                $comments = $meta['comments'] ?? [];
+                
+                $this->indexCard($boardId, $boardName, $cardId, $title, $description, $comments, $labels);
+                $indexed++;
+            }
+        }
+        
+        // Update last reindex timestamp
+        $this->db->prepare("UPDATE meta SET value = ? WHERE key = 'last_reindex'")->execute([time()]);
+        
+        return ['status' => 'ok', 'indexed' => $indexed];
+    }
+    
+    public function getStats() {
+        if (!$this->db) return ['available' => false];
+        
+        $count = $this->db->query("SELECT COUNT(*) FROM card_index")->fetchColumn();
+        $lastReindex = $this->db->query("SELECT value FROM meta WHERE key = 'last_reindex'")->fetchColumn();
+        
+        return [
+            'available' => true,
+            'card_count' => (int)$count,
+            'last_reindex' => (int)$lastReindex
+        ];
+    }
 }
 
 // Instantiate and run
@@ -1077,7 +1971,10 @@ class App {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Beckon</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>tailwind.config = { darkMode: 'class' }</script>
@@ -1163,33 +2060,188 @@ class App {
             background-color: #3b82f6 !important; /* Blue-500 */
             color: white !important;              /* White Text */
         }
+
+        /* Presentation Mode Overrides */
+        .presentation-mode .markdown-body { font-size: 24px; line-height: 1.8; max-width: 100%; }
+        .presentation-mode .markdown-body h1 { font-size: 2.5em; margin-top: 1em; }
+        .presentation-mode .markdown-body h2 { font-size: 2em; margin-top: 1em; }
+        .presentation-mode .markdown-body h3 { font-size: 1.5em; }
+        .presentation-mode .markdown-body p, .presentation-mode .markdown-body ul, .presentation-mode .markdown-body ol { margin-bottom: 1.5em; }
+        .presentation-mode .markdown-body img { margin: 2em auto; display: block; max-height: 80vh; }
+        .presentation-mode .markdown-body input[type="checkbox"] { transform: scale(1.5); margin-right: 12px; }
         
         .tribute-container li span { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; margin-right: 0.5rem; }
+        
+        /* Search Modal */
+        .search-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            z-index: 100;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 10vh;
+        }
+        .search-modal {
+            background: white;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 640px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+        .dark .search-modal {
+            background: #1e293b;
+            border: 1px solid #334155;
+        }
+        .search-result-item {
+            padding: 12px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid #f1f5f9;
+            transition: background 0.1s;
+        }
+        .search-result-item:hover, .search-result-item.selected {
+            background: #eff6ff;
+        }
+        .dark .search-result-item {
+            border-bottom-color: #334155;
+        }
+        .dark .search-result-item:hover, .dark .search-result-item.selected {
+            background: #334155;
+        }
+        .search-result-item mark {
+            background: #fef08a;
+            color: inherit;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+        .dark .search-result-item mark {
+            background: #854d0e;
+            color: #fef9c3;
+        }
+        
+        /* Mobile Responsive Styles */
+        @media (max-width: 768px) {
+            /* Smooth scrolling for iOS */
+            .scrolling-wrapper {
+                -webkit-overflow-scrolling: touch;
+                scroll-snap-type: x mandatory;
+            }
+            
+            /* Kanban columns - snap scrolling on mobile */
+            .kanban-column {
+                scroll-snap-align: center;
+                min-width: 85vw !important;
+                width: 85vw !important;
+            }
+            
+            /* Search modal - full width on mobile */
+            .search-modal {
+                max-width: 100%;
+                margin: 0 16px;
+                border-radius: 12px;
+            }
+            
+            .search-modal-backdrop {
+                padding-top: 5vh;
+            }
+            
+            /* Increase touch targets */
+            .touch-target {
+                min-height: 44px;
+                min-width: 44px;
+            }
+            
+            /* Mobile card modal */
+            .mobile-modal-full {
+                width: 100% !important;
+                max-width: 100% !important;
+                height: 100vh !important;
+                max-height: 100vh !important;
+                border-radius: 0 !important;
+                margin: 0 !important;
+            }
+            
+            /* Mobile sidebar overlay */
+            .mobile-sidebar-overlay {
+                position: fixed !important;
+                inset: 0 !important;
+                width: 100% !important;
+                z-index: 60 !important;
+                background: white !important;
+            }
+            .dark .mobile-sidebar-overlay {
+                background: #1e293b !important;
+            }
+            
+            /* Markdown body adjustments for mobile */
+            .markdown-body {
+                font-size: 16px;
+            }
+            
+            /* Presentation mode mobile */
+            .presentation-mode .markdown-body {
+                font-size: 18px;
+            }
+            .presentation-mode .markdown-body h1 {
+                font-size: 1.75em;
+            }
+        }
+        
+        @media (max-width: 640px) {
+            /* Extra small screens */
+            .search-modal-backdrop {
+                padding: 0;
+            }
+            .search-modal {
+                height: 100vh;
+                max-height: 100vh;
+                border-radius: 0;
+                margin: 0;
+            }
+        }
+        
+        /* Mobile menu animation */
+        .mobile-menu-enter {
+            animation: slideDown 0.2s ease-out;
+        }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* Long press visual feedback */
+        .long-press-active {
+            transform: scale(0.98);
+            opacity: 0.9;
+        }
     </style>
     <link rel="icon" href="https://raw.githubusercontent.com/austinginder/beckon/refs/heads/main/beckon-icon.webp">
 </head>
 <body class="bg-slate-900 h-screen overflow-hidden text-slate-800 font-sans">
     <div id="app" class="h-full flex flex-col" :class="{ 'dark': darkMode }">
         <header class="bg-slate-950 text-white p-3 flex justify-between items-center shadow-lg shrink-0 border-b border-slate-800 z-20">
-            <div class="flex items-center gap-4">
-                <div @click="showBoardSelector = true" class="flex items-center gap-2 font-bold text-xl tracking-tight cursor-pointer hover:opacity-80 transition group">
+            <div class="flex items-center gap-2 md:gap-4 min-w-0">
+                <div @click="showBoardSelector = true" class="flex items-center gap-2 font-bold text-xl tracking-tight cursor-pointer hover:opacity-80 transition group shrink-0">
                     <div class="h-8 w-8 bg-yellow-400 group-hover:bg-yellow-300 rounded-md flex items-center justify-center shadow-lg shadow-yellow-500/30 text-slate-900 transition">B</div>
                 </div>
                 
-                <div class="relative z-50">
-                    <div class="flex items-center gap-2 mr-4">
-                        <button @click="toggleBoardSwitcher" class="flex items-center gap-2 hover:bg-slate-800 rounded py-1 px-2 -ml-2 transition group">
-                            <h1 class="text-lg font-bold text-white whitespace-nowrap overflow-hidden text-ellipsis max-w-[400px]" title="Switch Board">
+                <div class="relative z-50 min-w-0">
+                    <div class="flex items-center gap-2 mr-2 md:mr-4">
+                        <button @click="toggleBoardSwitcher" class="flex items-center gap-1 md:gap-2 hover:bg-slate-800 rounded py-1 px-2 -ml-2 transition group min-w-0">
+                            <h1 class="text-base md:text-lg font-bold text-white whitespace-nowrap overflow-hidden text-ellipsis max-w-[120px] sm:max-w-[200px] md:max-w-[400px]" title="Switch Board">
                                 {{ boardData.title }}
                             </h1>
-                            <icon name="chevron-down" class="w-4 h-4 text-slate-500 group-hover:text-white transition" /></icon>
+                            <icon name="chevron-down" class="w-4 h-4 text-slate-500 group-hover:text-white transition shrink-0" /></icon>
                         </button>
-                        <button @click="openRenameModal" class="text-slate-500 hover:text-white p-1 rounded hover:bg-slate-800 transition" title="Rename Board">
+                        <button @click="openRenameModal" class="hidden sm:block text-slate-500 hover:text-white p-1 rounded hover:bg-slate-800 transition" title="Rename Board">
                             <icon name="pencil" class="w-4 h-4" /></icon>
                         </button>
                     </div>
 
-                    <div v-if="isBoardSwitcherOpen" class="absolute top-full left-0 mt-2 w-72 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-left">
+                    <div v-if="isBoardSwitcherOpen" class="absolute top-full left-0 mt-2 w-72 max-w-[calc(100vw-2rem)] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-left">
                         <div class="p-2 border-b border-slate-100 dark:border-slate-700">
                             <input 
                                 ref="boardSearchInput"
@@ -1220,59 +2272,80 @@ class App {
                     <div v-if="isBoardSwitcherOpen" @click="isBoardSwitcherOpen = false" class="fixed inset-0 z-[-1] cursor-default"></div>
                 </div>
 
-                <div class="flex items-center gap-2 px-2 py-1 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono uppercase tracking-wider shrink-0">
+                <div class="hidden md:flex items-center gap-2 px-2 py-1 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono uppercase tracking-wider shrink-0">
                     <div class="w-2 h-2 rounded-full" :class="syncStatusColor"></div> {{ syncMessage }}
                 </div>
             </div>
             
             <div class="flex gap-2 items-center">
-                <label class="cursor-pointer text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2">
-                    <icon name="cloud" class="w-3 h-3"></icon> Import
-                    <input type="file" @change="handleImportFile" class="hidden" accept=".json">
-                </label>
-
-                <div class="relative z-40">
-                    <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
-                        <icon name="archive" class="w-3 h-3"></icon>
-                        Archive
-                        <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ boardData.archive.length }}</span>
+                <!-- Mobile Menu Button -->
+                <button @click="isMobileMenuOpen = !isMobileMenuOpen" class="md:hidden text-slate-400 hover:text-white p-2 rounded hover:bg-slate-800 transition touch-target">
+                    <icon v-if="!isMobileMenuOpen" name="menu" class="w-5 h-5"></icon>
+                    <icon v-else name="close" class="w-5 h-5"></icon>
+                </button>
+                
+                <!-- Desktop Navigation -->
+                <div class="hidden md:flex gap-2 items-center">
+                    <!-- Global Search Button -->
+                    <button @click="openSearchModal" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2" title="Search (/)">
+                        <icon name="magnifying-glass" class="w-3 h-3"></icon>
+                        <span class="hidden sm:inline">Search</span>
+                        <kbd class="hidden sm:inline text-[10px] bg-slate-700 px-1.5 py-0.5 rounded font-mono">/</kbd>
                     </button>
+                    
+                    <label class="cursor-pointer text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2">
+                        <icon name="cloud" class="w-3 h-3"></icon> Import
+                        <input type="file" @change="handleImportFile" class="hidden" accept=".json">
+                    </label>
 
-                    <div v-if="isArchiveOpen" class="absolute top-full right-0 mt-2 w-80 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-right flex flex-col max-h-[500px]">
-                        <div class="p-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
-                            <input 
-                                ref="archiveSearchInput"
-                                v-model="archiveSearch" 
-                                placeholder="Search archived cards..." 
-                                class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 px-3 py-2 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-700 dark:text-slate-200"
-                            >
-                        </div>
-                        <div class="flex-1 overflow-y-auto">
-                            <div v-if="filteredArchive.length === 0" class="p-4 text-center text-slate-500 text-sm italic">
-                                {{ boardData.archive?.length ? 'No matches found.' : 'Archive is empty.' }}
+                    <div class="relative z-40">
+                        <button @click="toggleArchive" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
+                            <icon name="archive" class="w-3 h-3"></icon>
+                            Archive
+                            <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ boardData.archive.length }}</span>
+                        </button>
+
+                        <div v-if="isArchiveOpen" class="absolute top-full right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in origin-top-right flex flex-col max-h-[500px]">
+                            <div class="p-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                                <input 
+                                    ref="archiveSearchInput"
+                                    v-model="archiveSearch" 
+                                    placeholder="Search archived cards..." 
+                                    class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 px-3 py-2 rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-700 dark:text-slate-200"
+                                >
                             </div>
-                            <div v-for="(card, index) in filteredArchive" :key="card.id" 
-                                 @click="openCardModal('archive', boardData.archive.indexOf(card)); isArchiveOpen = false"
-                                 class="p-3 border-b border-slate-50 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer group">
-                                <div class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1 group-hover:text-blue-600">{{ card.title }}</div>
-                                <div class="text-xs text-slate-400 truncate">{{ card.description?.slice(0, 60) }}...</div>
+                            <div class="flex-1 overflow-y-auto">
+                                <div v-if="filteredArchive.length === 0" class="p-4 text-center text-slate-500 text-sm italic">
+                                    {{ boardData.archive?.length ? 'No matches found.' : 'Archive is empty.' }}
+                                </div>
+                                <div v-for="(card, index) in filteredArchive" :key="card.id" 
+                                     @click="openCardModal('archive', boardData.archive.indexOf(card)); isArchiveOpen = false"
+                                     class="p-3 border-b border-slate-50 dark:border-slate-700 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer group">
+                                    <div class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1 group-hover:text-blue-600">{{ card.title }}</div>
+                                    <div class="text-xs text-slate-400 truncate">{{ card.description?.slice(0, 60) }}...</div>
+                                </div>
                             </div>
                         </div>
+                        <div v-if="isArchiveOpen" @click="isArchiveOpen = false" class="fixed inset-0 z-[-1] cursor-default"></div>
                     </div>
-                    <div v-if="isArchiveOpen" @click="isArchiveOpen = false" class="fixed inset-0 z-[-1] cursor-default"></div>
-                </div>
 
-                <button @click="openUsersModal" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
-                    <icon name="users" class="w-3 h-3"></icon>
-                    Users
-                    <span v-if="Object.keys(boardData.users || {}).length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ Object.keys(boardData.users || {}).length }}</span>
+                    <button @click="openUsersModal" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition border border-slate-700 flex items-center gap-2 relative">
+                        <icon name="users" class="w-3 h-3"></icon>
+                        Users
+                        <span v-if="Object.keys(boardData.users || {}).length" class="bg-slate-600 text-white text-[10px] px-1.5 rounded-full">{{ Object.keys(boardData.users || {}).length }}</span>
+                    </button>
+                </div>
+                
+                <!-- Mobile: Search button always visible -->
+                <button @click="openSearchModal" class="md:hidden text-slate-400 hover:text-white p-2 rounded hover:bg-slate-800 transition touch-target" title="Search">
+                    <icon name="magnifying-glass" class="w-5 h-5"></icon>
                 </button>
 
-                <div v-if="isUsersModalOpen" class="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4 backdrop-blur-sm" @click.self="isUsersModalOpen = false">
-                    <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col h-[70vh]">
+                <div v-if="isUsersModalOpen" class="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-0 md:p-4 backdrop-blur-sm" @click.self="isUsersModalOpen = false">
+                    <div class="bg-white dark:bg-slate-800 md:rounded-lg shadow-2xl w-full max-w-full md:max-w-2xl overflow-hidden flex flex-col h-full md:h-[70vh]">
                         <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
                             <h3 class="font-bold text-slate-700 dark:text-slate-200">User Management</h3>
-                            <button @click="isUsersModalOpen = false" class="text-slate-400 hover:text-red-500"><icon name="close" class="w-5 h-5"></icon></button>
+                            <button @click="isUsersModalOpen = false" class="text-slate-400 hover:text-red-500 p-2 touch-target"><icon name="close" class="w-5 h-5"></icon></button>
                         </div>
                         
                         <div class="flex-1 flex overflow-hidden">
@@ -1344,11 +2417,14 @@ class App {
                     </div>
                 </div>
 
-                <button @click="darkMode = !darkMode" class="text-slate-400 hover:text-white transition p-1.5 rounded hover:bg-slate-800 ml-auto">
+                <!-- Desktop: Dark mode toggle -->
+                <button @click="darkMode = !darkMode" class="hidden md:block text-slate-400 hover:text-white transition p-1.5 rounded hover:bg-slate-800 ml-auto">
                     <icon v-if="darkMode" name="sun" class="w-4 h-4"></icon>
                     <icon v-else name="moon" class="w-4 h-4"></icon>
                 </button>
-                <div class="relative group mr-2">
+                
+                <!-- Desktop: User settings -->
+                <div class="relative group mr-2 hidden md:block">
                     <button class="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition border-2 border-slate-700 hover:border-blue-500"
                             :class="`bg-${currentUser.color}-200 text-${currentUser.color}-700`"
                             title="User Settings">
@@ -1370,12 +2446,66 @@ class App {
                         </div>
                     </div>
                 </div>
-                <div class="h-4 w-px bg-slate-700 mx-2"></div>
-                <button @click="showCreateBoardModal = true" class="text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold px-3 py-1.5 rounded transition shadow-lg shadow-blue-900/50">New Board</button>
+                <div class="hidden md:block h-4 w-px bg-slate-700 mx-2"></div>
+                <button @click="showCreateBoardModal = true" class="hidden md:block text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold px-3 py-1.5 rounded transition shadow-lg shadow-blue-900/50">New Board</button>
             </div>
+            
+            <!-- Mobile Menu Dropdown -->
+            <div v-if="isMobileMenuOpen" class="md:hidden absolute top-full left-0 right-0 bg-slate-900 border-b border-slate-800 shadow-xl z-50 mobile-menu-enter">
+                <div class="p-4 space-y-2">
+                    <!-- Sync Status -->
+                    <div class="flex items-center gap-2 px-3 py-2 rounded bg-slate-800 text-xs font-mono uppercase tracking-wider">
+                        <div class="w-2 h-2 rounded-full" :class="syncStatusColor"></div> {{ syncMessage }}
+                    </div>
+                    
+                    <!-- Menu Items -->
+                    <button @click="openSearchModal(); isMobileMenuOpen = false" class="w-full text-left px-3 py-3 text-sm text-white hover:bg-slate-800 rounded flex items-center gap-3 touch-target">
+                        <icon name="magnifying-glass" class="w-5 h-5 text-slate-400"></icon>
+                        Search
+                    </button>
+                    
+                    <label class="w-full text-left px-3 py-3 text-sm text-white hover:bg-slate-800 rounded flex items-center gap-3 cursor-pointer touch-target">
+                        <icon name="cloud" class="w-5 h-5 text-slate-400"></icon>
+                        Import
+                        <input type="file" @change="handleImportFile($event); isMobileMenuOpen = false" class="hidden" accept=".json">
+                    </label>
+                    
+                    <button @click="toggleArchive(); isMobileMenuOpen = false" class="w-full text-left px-3 py-3 text-sm text-white hover:bg-slate-800 rounded flex items-center gap-3 touch-target">
+                        <icon name="archive" class="w-5 h-5 text-slate-400"></icon>
+                        Archive
+                        <span v-if="boardData.archive?.length" class="bg-slate-600 text-white text-xs px-2 rounded-full ml-auto">{{ boardData.archive.length }}</span>
+                    </button>
+                    
+                    <button @click="openUsersModal(); isMobileMenuOpen = false" class="w-full text-left px-3 py-3 text-sm text-white hover:bg-slate-800 rounded flex items-center gap-3 touch-target">
+                        <icon name="users" class="w-5 h-5 text-slate-400"></icon>
+                        Users
+                        <span v-if="Object.keys(boardData.users || {}).length" class="bg-slate-600 text-white text-xs px-2 rounded-full ml-auto">{{ Object.keys(boardData.users || {}).length }}</span>
+                    </button>
+                    
+                    <button @click="openRenameModal(); isMobileMenuOpen = false" class="w-full text-left px-3 py-3 text-sm text-white hover:bg-slate-800 rounded flex items-center gap-3 touch-target">
+                        <icon name="pencil" class="w-5 h-5 text-slate-400"></icon>
+                        Board Settings
+                    </button>
+                    
+                    <div class="border-t border-slate-800 my-2"></div>
+                    
+                    <button @click="darkMode = !darkMode" class="w-full text-left px-3 py-3 text-sm text-white hover:bg-slate-800 rounded flex items-center gap-3 touch-target">
+                        <icon v-if="darkMode" name="sun" class="w-5 h-5 text-slate-400"></icon>
+                        <icon v-else name="moon" class="w-5 h-5 text-slate-400"></icon>
+                        {{ darkMode ? 'Light Mode' : 'Dark Mode' }}
+                    </button>
+                    
+                    <div class="border-t border-slate-800 my-2"></div>
+                    
+                    <button @click="showCreateBoardModal = true; isMobileMenuOpen = false" class="w-full text-center px-3 py-3 text-sm bg-blue-600 hover:bg-blue-500 text-white font-bold rounded transition touch-target">
+                        + New Board
+                    </button>
+                </div>
+            </div>
+            <div v-if="isMobileMenuOpen" @click="isMobileMenuOpen = false" class="md:hidden fixed inset-0 z-40"></div>
         </header>
 
-        <main class="flex-1 overflow-x-auto overflow-y-hidden p-6 scrolling-wrapper">
+        <main class="flex-1 overflow-x-auto overflow-y-hidden p-4 md:p-6 scrolling-wrapper" style="-webkit-overflow-scrolling: touch;">
             <div class="flex h-full gap-6 items-start">
                 <div v-for="(list, listIndex) in boardData.lists" 
                     :key="list.id" 
@@ -1384,12 +2514,12 @@ class App {
                     @drop.prevent="onDrop">
                     
                     <div v-if="dragSource?.type === 'list' && dragTarget?.index === listIndex && dragSource.index > listIndex" 
-                        class="w-72 h-full bg-blue-600/10 border-2 border-dashed border-blue-600/50 rounded-lg shrink-0 mr-6 animate-pulse">
+                        class="w-72 md:w-72 kanban-column h-full bg-blue-600/10 border-2 border-dashed border-blue-600/50 rounded-lg shrink-0 mr-6 animate-pulse">
                     </div>
 
                     <div 
                         :class="{'opacity-50 grayscale': dragSource?.type === 'list' && dragSource?.index === listIndex}"
-                        class="w-72 bg-slate-100 dark:bg-slate-800/50 rounded-lg shadow-xl flex flex-col shrink-0 max-h-full border-t-4 border-blue-600 transition-all hover:border-blue-500">
+                        class="w-72 md:w-72 kanban-column bg-slate-100 dark:bg-slate-800/50 rounded-lg shadow-xl flex flex-col shrink-0 max-h-full border-t-4 border-blue-600 transition-all hover:border-blue-500">
                         
                         <div 
                             draggable="true"
@@ -1397,7 +2527,7 @@ class App {
                             @dragend="onDragEnd"
                             class="p-3 flex justify-between items-center rounded-t-lg shrink-0 cursor-grab active:cursor-grabbing hover:bg-slate-200 dark:hover:bg-slate-700 transition">
                             <input v-model="list.title" @change="persistLayout" class="bg-transparent font-bold text-slate-700 dark:text-slate-200 text-sm focus:outline-none w-full cursor-text">
-                            <button @click="deleteList(listIndex)" class="text-slate-400 hover:text-red-500 px-1">×</button>
+                            <button @click="deleteList(listIndex)" class="text-slate-400 hover:text-red-500 p-2 -mr-1 touch-target">×</button>
                         </div>
 
                         <div class="flex-1 overflow-y-auto p-2 min-h-[50px]">
@@ -1411,16 +2541,25 @@ class App {
                                     @click="openCardModal(listIndex, cardIndex)"
                                     @mouseenter="hoveredCard = { l: listIndex, c: cardIndex }"
                                     @mouseleave="hoveredCard = { l: null, c: null }"
-                                    :class="{'ring-2 ring-blue-400 ring-offset-1': hoveredCard.l === listIndex && hoveredCard.c === cardIndex}"
+                                    @touchstart="handleCardTouchStart($event, listIndex, cardIndex)"
+                                    @touchend="handleCardTouchEnd"
+                                    @touchmove="handleCardTouchMove"
+                                    :class="{'ring-2 ring-blue-400 ring-offset-1': hoveredCard.l === listIndex && hoveredCard.c === cardIndex, 'long-press-active': longPressCard?.l === listIndex && longPressCard?.c === cardIndex}"
                                     class="bg-white dark:bg-slate-700 p-3 rounded shadow-sm border border-slate-200 dark:border-slate-600 hover:shadow-md cursor-pointer transition group relative hover:border-blue-400 mb-2">
 
-                                    <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap">
+                                    <!-- Mobile: Quick actions button -->
+                                    <button @click.stop="showContextMenu($event, listIndex, cardIndex)" 
+                                            class="md:hidden absolute top-2 right-2 p-1.5 bg-slate-100 dark:bg-slate-600 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 opacity-70 hover:opacity-100 transition touch-target z-10">
+                                        <icon name="dots-vertical" class="w-4 h-4"></icon>
+                                    </button>
+
+                                    <div v-if="card.labels?.length" class="flex gap-1 mb-2 flex-wrap pr-8 md:pr-0">
                                         <span v-for="l in card.labels" :key="l.name || l" :class="`bg-${(l.color || l)}-500`" class="h-2 w-8 rounded-full block" :title="l.name || l"></span>
                                     </div>
                                     <div v-if="card.coverImage" class="mb-2 -mx-3 -mt-3 rounded-t overflow-hidden h-32 relative group/cover">
                                         <img :src="card.coverImage" class="w-full h-full object-cover">
                                     </div>
-                                    <div class="text-sm text-slate-800 dark:text-slate-100 mb-2">{{ card.title }}</div>
+                                    <div class="text-sm text-slate-800 dark:text-slate-100 mb-2 pr-6 md:pr-0">{{ card.title }}</div>
                                     <div class="flex items-center justify-between">
                                         <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono">
                                             <span v-if="card.hasDesc"><icon name="text" class="w-3 h-3 inline"></icon></span>
@@ -1429,7 +2568,7 @@ class App {
                                             <span v-if="getTaskStats(card).total > 0" :class="{'text-green-600 dark:text-green-400': getTaskStats(card).done === getTaskStats(card).total}">
                                                 <icon name="check-circle" class="w-3 h-3 inline"></icon> {{ getTaskStats(card).done }}/{{ getTaskStats(card).total }}
                                             </span>
-                                            <span v-if="card.startDate || card.dueDate" class="flex items-center gap-1" :class="card.dueDate ? getDueDateColor(card.dueDate) : 'text-slate-400'">
+                                            <span v-if="card.startDate || card.dueDate" class="flex items-center gap-1 px-0.5" :class="card.dueDate ? getDueDateColor(card.dueDate) : 'text-slate-400'">
                                                 <icon name="clock" class="w-3 h-3 inline"></icon> 
                                                 <span v-if="card.startDate">{{ formatDateShort(card.startDate) }}<span v-if="card.dueDate" class="mx-0.5">-</span></span>
                                                 <span v-if="card.dueDate">{{ formatDateShort(card.dueDate) }}</span>
@@ -1451,48 +2590,48 @@ class App {
                     </div>
 
                     <div v-if="dragSource?.type === 'list' && dragTarget?.index === listIndex && dragSource.index < listIndex" 
-                        class="w-72 h-full bg-blue-600/10 border-2 border-dashed border-blue-600/50 rounded-lg shrink-0 ml-6 animate-pulse">
+                        class="w-72 md:w-72 kanban-column h-full bg-blue-600/10 border-2 border-dashed border-blue-600/50 rounded-lg shrink-0 ml-6 animate-pulse">
                     </div>
                 </div>
-                <button @click="addList" class="w-72 h-12 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-600 hover:border-slate-500 text-slate-400 font-bold rounded-lg shrink-0 transition flex items-center justify-center">+ Add List</button>
+                <button @click="addList" class="w-72 md:w-72 kanban-column h-12 bg-slate-800/50 hover:bg-slate-800 border-2 border-dashed border-slate-600 hover:border-slate-500 text-slate-400 font-bold rounded-lg shrink-0 transition flex items-center justify-center">+ Add List</button>
                 <div class="w-4 shrink-0"></div>
             </div>
         </main>
 
-        <div v-if="isModalOpen" class="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4 backdrop-blur-sm" @click.self="closeModal">
-            <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden animate-fade-in-up">
+        <div v-if="isModalOpen" class="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-0 md:p-4 backdrop-blur-sm" @click.self="closeModal">
+            <div class="bg-white dark:bg-slate-800 md:rounded-lg shadow-2xl w-full max-w-full md:max-w-7xl h-full md:h-[90vh] flex flex-col overflow-hidden animate-fade-in-up">
                 
-                <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-start shrink-0 transition-colors">
-                    <div class="flex-1 mr-8">
-                        <input v-model="activeCard.data.title" @blur="persistLayout" class="w-full text-2xl font-bold bg-transparent border-none focus:ring-0 text-slate-800 dark:text-slate-100 placeholder-slate-400 px-0" placeholder="Card Title">
-                        <div v-if="activeCard.listIndex === 'archive'" class="mt-2 flex items-center gap-3">
+                <div class="p-3 md:p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-start shrink-0 transition-colors">
+                    <div class="flex-1 mr-2 md:mr-8 min-w-0">
+                        <input v-model="activeCard.data.title" @blur="persistLayout" class="w-full text-lg md:text-2xl font-bold bg-transparent border-none focus:ring-0 text-slate-800 dark:text-slate-100 placeholder-slate-400 px-0" placeholder="Card Title">
+                        <div v-if="activeCard.listIndex === 'archive'" class="mt-2 flex items-center gap-2 md:gap-3 flex-wrap">
                             <span class="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-1 rounded">ARCHIVED</span>
                             <button @click="restoreArchivedCard" class="text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold px-3 py-1 rounded border border-amber-200 transition flex items-center gap-1">
                                 <icon name="undo" class="w-3 h-3"></icon>
-                                Restore to Board
+                                Restore
                             </button>
                         </div>
-                        <div v-else class="text-xs text-slate-500 mt-1">in list <span class="font-bold underline">{{ boardData.lists[activeCard.listIndex]?.title }}</span></div>
+                        <div v-else class="text-xs text-slate-500 mt-1 truncate">in list <span class="font-bold underline">{{ boardData.lists[activeCard.listIndex]?.title }}</span></div>
                     </div>
                     
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-1 md:gap-2 shrink-0">
 
                         <div class="relative group">
-                            <div v-if="hasUnsavedChanges" class="animate-fade-in mr-2">
+                            <div v-if="hasUnsavedChanges" class="animate-fade-in mr-1 md:mr-2">
                                 <button @click="manualSaveRevision" 
-                                        class="text-xs bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 font-bold px-3 py-1.5 rounded transition flex items-center gap-2">
+                                        class="text-xs bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 font-bold px-2 md:px-3 py-1.5 rounded transition flex items-center gap-1 md:gap-2">
                                     <icon name="check" class="w-3 h-3"></icon>
-                                    Save Revision
+                                    <span class="hidden sm:inline">Save Revision</span>
                                 </button>
                             </div>
                         </div>
                         
-                        <div class="relative group">
+                        <div class="relative group hidden sm:block">
                             
-                            <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
-                                <icon v-if="splitPaneRatio === 100" name="pencil" class="h-6 w-6"></icon>
-                                <icon v-else-if="splitPaneRatio === 0" name="eye" class="h-6 w-6"></icon>
-                                <icon v-else name="code" class="h-6 w-6"></icon>
+                            <button @click="toggleView" class="text-slate-400 hover:text-blue-600 transition p-1.5 md:p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 touch-target">
+                                <icon v-if="splitPaneRatio === 100" name="pencil" class="h-5 w-5 md:h-6 md:w-6"></icon>
+                                <icon v-else-if="splitPaneRatio === 0" name="eye" class="h-5 w-5 md:h-6 md:w-6"></icon>
+                                <icon v-else name="code" class="h-5 w-5 md:h-6 md:w-6"></icon>
                             </button>
                             <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
                                 {{ splitPaneRatio === 100 ? 'Switch to Preview' : (splitPaneRatio === 0 ? 'Switch to Split' : 'Switch to Editor') }}
@@ -1501,17 +2640,27 @@ class App {
                         </div>
 
                         <div class="relative group">
-                            <button @click="isSidebarOpen = !isSidebarOpen" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
-                                <icon name="sidebar" class="h-6 w-6"></icon>
+                            <button @click="isSidebarOpen = !isSidebarOpen" class="text-slate-400 hover:text-blue-600 transition p-1.5 md:p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 touch-target">
+                                <icon name="sidebar" class="h-5 w-5 md:h-6 md:w-6"></icon>
                             </button>
-                            <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
+                            <div class="hidden md:block absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
                                 {{ isSidebarOpen ? 'Close Sidebar' : 'Open Sidebar' }}
                                 <div class="absolute bottom-full right-2 -mt-[1px] border-4 border-transparent border-b-slate-800"></div>
                             </div>
                         </div>
 
-                        <button @click="closeModal" class="text-slate-400 hover:text-red-500 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700" title="Close (Esc)">
-                            <icon name="close" class="h-8 w-8"></icon>
+                        <div class="relative group hidden md:block">
+                            <button @click="isPresentationMode = true" class="text-slate-400 hover:text-blue-600 transition p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700">
+                                <icon name="presentation" class="h-6 w-6"></icon>
+                            </button>
+                            <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-[10px] font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                Presentation Mode
+                                <div class="absolute bottom-full right-2 -mt-[1px] border-4 border-transparent border-b-slate-800"></div>
+                            </div>
+                        </div>
+
+                        <button @click="closeModal" class="text-slate-400 hover:text-red-500 transition p-1.5 md:p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 touch-target" title="Close (Esc)">
+                            <icon name="close" class="h-6 w-6 md:h-8 md:w-8"></icon>
                         </button>
                     </div>
                 </div>
@@ -1742,8 +2891,18 @@ class App {
                         </div>
                     </div>
 
-                    <div v-if="isSidebarOpen" class="w-72 bg-slate-50 dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 flex flex-col overflow-y-auto shrink-0 transition-all duration-300">
-                        <div class="p-4 space-y-6">
+                    <!-- Mobile sidebar backdrop -->
+                    <div v-if="isSidebarOpen" @click="isSidebarOpen = false" class="md:hidden fixed inset-0 bg-black/50 z-40"></div>
+                    
+                    <div v-if="isSidebarOpen" class="fixed md:relative inset-y-0 right-0 w-full sm:w-80 md:w-72 bg-slate-50 dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 flex flex-col overflow-y-auto shrink-0 transition-all duration-300 z-50 md:z-auto">
+                        <!-- Mobile sidebar header -->
+                        <div class="md:hidden p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-white dark:bg-slate-800">
+                            <h3 class="font-bold text-slate-700 dark:text-slate-200">Card Details</h3>
+                            <button @click="isSidebarOpen = false" class="text-slate-400 hover:text-red-500 p-2 touch-target">
+                                <icon name="close" class="w-5 h-5"></icon>
+                            </button>
+                        </div>
+                        <div class="p-4 space-y-6 overflow-y-auto flex-1">
                             
                             <div class="text-xs text-slate-400 font-mono">
                                 <div>Created {{ formatTime(activeCard.data.created_at) }}</div>
@@ -1976,59 +3135,62 @@ class App {
                 </div>
             </div>
         </div>
+        <!-- Context menu backdrop for mobile -->
+        <div v-if="contextMenu.show" @click="closeContextMenu" class="md:hidden fixed inset-0 bg-black/30 z-[99]"></div>
+        
         <div v-if="contextMenu.show" 
-            class="fixed z-[100] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 w-48 py-1 overflow-hidden animate-fade-in"
-            :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
+            class="fixed z-[100] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 w-56 md:w-48 py-1 overflow-hidden animate-fade-in max-h-[80vh] overflow-y-auto"
+            :style="contextMenuStyle"
             @click.stop>
 
             <button @click="openCardModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="pencil" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="pencil" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Edit Card
             </button>
 
             <button @click="openMoveModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="move" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="move" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Move Card
             </button>
 
             <button @click="prepareWpPublish(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="cloud" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="cloud" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Publish to WP
             </button>
 
             <button @click="openCoverModal(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="image" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="image" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Change Cover
             </button>
 
             <button v-if="hasCover(contextMenu.lIdx, contextMenu.cIdx)" 
                     @click="removeCover(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="close" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="close" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Remove Cover
             </button>
 
             <button @click="cloneCard(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="duplicate" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="duplicate" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Duplicate
             </button>
 
             <button @click="archiveCardContext(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-2">
-                <icon name="archive" class="w-4 h-4 text-slate-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="archive" class="w-5 h-5 md:w-4 md:h-4 text-slate-400"></icon>
                 Archive
             </button>
 
             <div class="border-t border-slate-100 dark:border-slate-700 my-1"></div>
 
             <button @click="deleteCardContext(contextMenu.lIdx, contextMenu.cIdx); closeContextMenu()" 
-                    class="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2">
-                <icon name="trash" class="w-4 h-4 text-red-400"></icon>
+                    class="w-full text-left px-4 py-3 md:py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-3 md:gap-2 touch-target">
+                <icon name="trash" class="w-5 h-5 md:w-4 md:h-4 text-red-400"></icon>
                 Delete
             </button>
         </div>
@@ -2069,11 +3231,11 @@ class App {
             </div>
         </div>
 
-        <div v-if="showCoverModalState" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[110] p-4 backdrop-blur-sm" @click.self="showCoverModalState = false">
-            <div class="bg-white dark:bg-slate-800 rounded-lg shadow-2xl w-full max-w-2xl h-[70vh] flex flex-col overflow-hidden animate-fade-in-up border border-slate-200 dark:border-slate-700">
+        <div v-if="showCoverModalState" class="fixed inset-0 bg-black/75 flex items-center justify-center z-[110] p-0 md:p-4 backdrop-blur-sm" @click.self="showCoverModalState = false">
+            <div class="bg-white dark:bg-slate-800 md:rounded-lg shadow-2xl w-full max-w-full md:max-w-2xl h-full md:h-[70vh] flex flex-col overflow-hidden animate-fade-in-up border-0 md:border border-slate-200 dark:border-slate-700">
                 <div class="p-4 border-b dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-between items-center">
                     <h3 class="font-bold text-slate-700 dark:text-slate-200">Select Cover Image</h3>
-                    <button @click="showCoverModalState = false" class="text-slate-400 hover:text-red-500">
+                    <button @click="showCoverModalState = false" class="text-slate-400 hover:text-red-500 p-2 touch-target">
                         <icon name="close" class="w-5 h-5"></icon>
                     </button>
                 </div>
@@ -2113,6 +3275,59 @@ class App {
                                 <icon name="check" class="w-3 h-3"></icon>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Presentation Mode Modal -->
+        <div v-if="isPresentationMode" class="fixed inset-0 z-[200] bg-white dark:bg-slate-900 flex flex-col animate-fade-in overflow-hidden presentation-mode">
+            <!-- Presentation Header -->
+            <div class="absolute top-0 right-0 p-6 flex items-center gap-4 z-50 print:hidden opacity-0 hover:opacity-100 transition-opacity duration-500">
+                
+                <!-- Export Button -->
+                <button @click="exportPresentation" :disabled="isExporting" class="bg-slate-200 dark:bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-500 p-2 rounded-full shadow-lg transition group relative" title="Export as Standalone HTML">
+                    <icon v-if="!isExporting" name="cloud" class="w-8 h-8"></icon>
+                    <icon v-else name="check-circle" class="w-8 h-8 animate-pulse text-blue-500"></icon>
+                    
+                    <!-- Tooltip -->
+                    <div class="absolute top-full right-0 mt-2 px-2 py-1 bg-slate-800 text-white text-xs font-bold rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+                        Download Standalone HTML
+                    </div>
+                </button>
+
+                <!-- Close Button -->
+                <button @click="isPresentationMode = false" class="bg-slate-200 dark:bg-slate-800 hover:bg-red-500 hover:text-white text-slate-500 p-2 rounded-full shadow-lg transition">
+                    <icon name="close" class="w-8 h-8"></icon>
+                </button>
+            </div>
+
+            <!-- Scrollable Content -->
+            <div class="flex-1 overflow-y-auto px-8 py-16 scroll-smooth">
+                <div class="max-w-5xl mx-auto">
+                    <!-- Title -->
+                    <h1 class="text-6xl font-extrabold text-slate-900 dark:text-white mb-4 leading-tight tracking-tight border-b-4 border-blue-500 pb-6">
+                        {{ activeCard.data.title }}
+                    </h1>
+                    
+                    <!-- Metadata pill -->
+                    <div class="flex items-center gap-4 mb-16 text-slate-500 dark:text-slate-400 text-lg font-mono">
+                        <span class="bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded">
+                            {{ boardData.lists[activeCard.listIndex]?.title }}
+                        </span>
+                        <span v-if="activeCard.data.assignees?.length" class="flex items-center gap-2">
+                            Assignments: {{ activeCard.data.assignees.map(uid => getUserName(uid)).join(', ') }}
+                        </span>
+                    </div>
+
+                    <!-- Main Content -->
+                    <div class="markdown-body text-slate-800 dark:text-slate-200" 
+                         v-html="compiledMarkdown"
+                         @click="handleCheckboxClick">
+                    </div>
+
+                    <!-- Footer / Spacer -->
+                    <div class="h-32 flex items-center justify-center mt-16 text-slate-300 dark:text-slate-700">
+                        <span class="text-4xl">&bull; &bull; &bull;</span>
                     </div>
                 </div>
             </div>
@@ -2262,6 +3477,95 @@ class App {
                 </div>
             </div>
         </div>
+
+        <!-- Global Search Modal -->
+        <div v-if="showSearchModal" class="search-modal-backdrop" @click.self="closeSearchModal">
+            <div class="search-modal animate-fade-in">
+                <!-- Search Input -->
+                <div class="p-4 border-b border-slate-200 dark:border-slate-700">
+                    <div class="flex items-center gap-3">
+                        <icon name="magnifying-glass" class="w-5 h-5 text-slate-400 shrink-0"></icon>
+                        <input 
+                            id="global-search-input"
+                            v-model="searchQuery"
+                            @keydown="handleSearchKeydown"
+                            type="text"
+                            placeholder="Search cards across all boards..."
+                            class="flex-1 bg-transparent border-none outline-none text-lg text-slate-800 dark:text-slate-100 placeholder-slate-400"
+                            autocomplete="off"
+                        >
+                        <div v-if="isSearching" class="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
+                        <kbd class="text-xs bg-slate-100 dark:bg-slate-700 text-slate-500 px-2 py-1 rounded shrink-0">ESC</kbd>
+                    </div>
+                    
+                    <!-- Board Filter -->
+                    <div class="mt-3 flex items-center gap-2 text-sm">
+                        <span class="text-slate-500">in:</span>
+                        <select v-model="searchBoardFilter" @change="performSearch" class="bg-slate-100 dark:bg-slate-700 border-none rounded px-2 py-1 text-slate-700 dark:text-slate-200 text-sm outline-none">
+                            <option value="">All Boards</option>
+                            <option v-for="b in availableBoards" :key="b.id" :value="b.id">{{ b.name }}</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- Results -->
+                <div class="max-h-[60vh] overflow-y-auto">
+                    <!-- No Query -->
+                    <div v-if="searchQuery.length < 2 && searchResults.length === 0" class="p-8 text-center text-slate-500">
+                        <icon name="magnifying-glass" class="w-12 h-12 mx-auto mb-3 opacity-30"></icon>
+                        <p>Type to search across all cards</p>
+                        <p class="text-sm mt-2">Search titles, descriptions, comments, and labels</p>
+                    </div>
+                    
+                    <!-- No Results -->
+                    <div v-else-if="searchQuery.length >= 2 && searchResults.length === 0 && !isSearching" class="p-8 text-center text-slate-500">
+                        <p>No results for "<strong class="text-slate-700 dark:text-slate-300">{{ searchQuery }}</strong>"</p>
+                        <p class="text-sm mt-2">Try different keywords or check spelling</p>
+                    </div>
+                    
+                    <!-- Results List -->
+                    <div v-else>
+                        <div 
+                            v-for="(result, idx) in searchResults" 
+                            :key="result.card_id"
+                            @click="navigateToSearchResult(result)"
+                            :class="['search-result-item', { 'selected': idx === selectedSearchIndex }]"
+                        >
+                            <div class="flex items-start justify-between gap-3">
+                                <div class="flex-1 min-w-0">
+                                    <div class="font-medium text-slate-800 dark:text-slate-100 truncate">{{ result.title }}</div>
+                                    <div v-if="result.snippet" class="text-sm text-slate-500 dark:text-slate-400 mt-1 line-clamp-2" v-html="result.snippet"></div>
+                                </div>
+                                <div class="flex flex-col items-end gap-1 shrink-0">
+                                    <span class="text-xs bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded">
+                                        {{ result.board_name }}
+                                    </span>
+                                    <div v-if="result.labels && result.labels.length" class="flex gap-1">
+                                        <span 
+                                            v-for="label in result.labels.slice(0, 3)" 
+                                            :key="label.color"
+                                            :class="'w-2 h-2 rounded-full bg-' + label.color + '-500'"
+                                        ></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Footer -->
+                <div class="p-3 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-xs text-slate-500">
+                    <div class="flex gap-4">
+                        <span><kbd class="bg-slate-100 dark:bg-slate-700 px-1 rounded">↑↓</kbd> navigate</span>
+                        <span><kbd class="bg-slate-100 dark:bg-slate-700 px-1 rounded">↵</kbd> open</span>
+                    </div>
+                    <button @click="rebuildSearchIndex" class="hover:text-blue-500 transition" title="Rebuild search index">
+                        Rebuild Index
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <div v-if="toast.show" class="fixed bottom-6 right-6 z-[200] animate-fade-in-up cursor-pointer" @click="toast.show = false">
             <div :class="{
                 'bg-slate-800 text-white border-slate-700': toast.type === 'info',
@@ -2314,7 +3618,11 @@ class App {
         'eye': 'M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z',
         'code': 'M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
         'minimize': 'M5 11l7-7 7 7M5 19l7-7 7 7',
-        'maximize': 'M19 13l-7 7-7-7M19 5l-7 7-7-7'
+        'maximize': 'M19 13l-7 7-7-7M19 5l-7 7-7-7',
+        'presentation': 'M3 4h18v12H3V4z M3 16h18v1H3v-1z M10 17v3h4v-3',
+        'magnifying-glass': 'M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z',
+        'menu': 'M4 6h16M4 12h16M4 18h16',
+        'dots-vertical': 'M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z'
     };
 
     const Icon = (props) => Vue.h('svg', {
@@ -2371,6 +3679,7 @@ class App {
         setup() {
             // --- Configuration & Constants ---
             const md = window.markdownit({ html: true, breaks: true, linkify: true }).use(window.markdownitEmoji);
+            const isExporting = ref(false);
 
             // --- Source Map Injection ---
             const proxyRenderer = (ruleName) => {
@@ -2601,6 +3910,117 @@ class App {
                 localStorage.setItem('beckon_wp_sites', JSON.stringify(savedWpSites.value));
                 if (selectedSiteId.value === id) selectedSiteId.value = '';
             };
+            const imageToBase64 = async (url) => {
+                try {
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+                    return new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+                } catch (e) {
+                    console.warn('Failed to convert image:', url);
+                    return url; // Fallback to original URL
+                }
+            };
+            const exportPresentation = async () => {
+                isExporting.value = true;
+                try {
+                    const title = activeCard.value.data.title;
+                    
+                    // 1. Get raw HTML from current view
+                    // We clone it to not mess up the DOM while processing
+                    const contentEl = document.querySelector('.presentation-mode .markdown-body');
+                    if (!contentEl) throw new Error("Could not find content");
+                    
+                    // Create a temporary container to manipulate DOM
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = contentEl.innerHTML;
+
+                    // 2. Embed Images (Base64)
+                    const images = Array.from(tempDiv.querySelectorAll('img'));
+                    for (const img of images) {
+                        // Only process local images
+                        if (!img.src.startsWith('http') || img.src.includes(window.location.host)) {
+                            const base64 = await imageToBase64(img.src);
+                            img.src = base64; // Replace src with data URI
+                        }
+                    }
+
+                    // 3. Build the HTML File
+                    // We inject Tailwind CDN and specific styles to ensure it looks exactly like Beckon
+                    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${title} - Presentation</title>
+    <script src="https://cdn.tailwindcss.com"><\/script>
+    <script>tailwind.config = { darkMode: 'class' }<\/script>
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: sans-serif; }
+        .markdown-body { font-size: 24px; line-height: 1.8; max-width: 100%; color: #e2e8f0; }
+        .markdown-body h1 { font-size: 2.5em; font-weight: 800; margin: 1.5em 0 0.5em; border-bottom: 1px solid #334155; padding-bottom: 0.3em; }
+        .markdown-body h2 { font-size: 2em; font-weight: 700; margin: 1.5em 0 0.5em; border-bottom: 1px solid #334155; padding-bottom: 0.3em; }
+        .markdown-body h3 { font-size: 1.5em; font-weight: 600; margin: 1em 0 0.5em; }
+        .markdown-body ul, .markdown-body ol { padding-left: 1.5rem; list-style-type: disc; margin-bottom: 1.5em; }
+        .markdown-body ol { list-style-type: decimal; }
+        .markdown-body a { color: #60a5fa; text-decoration: underline; }
+        .markdown-body img { margin: 2em auto; display: block; max-height: 80vh; max-width: 100%; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        .markdown-body blockquote { border-left: 6px solid #334155; padding-left: 1em; font-style: italic; color: #94a3b8; margin-bottom: 1.5em; }
+        .markdown-body pre { background: #1e293b; padding: 1.5em; border-radius: 8px; overflow-x: auto; margin-bottom: 1.5em; border: 1px solid #334155; }
+        .markdown-body code { font-family: monospace; background: #1e293b; padding: 0.2em 0.4em; border-radius: 4px; font-size: 0.9em; color: #f472b6; }
+        .markdown-body pre code { padding: 0; background: transparent; color: inherit; }
+        .markdown-body input[type="checkbox"] { transform: scale(1.5); margin-right: 12px; }
+        
+        /* Layout */
+        .container { max-width: 64rem; margin: 0 auto; padding: 4rem 2rem; }
+        .header { border-bottom: 4px solid #3b82f6; padding-bottom: 1.5rem; margin-bottom: 2rem; }
+        .meta { display: flex; gap: 1rem; color: #94a3b8; font-family: monospace; font-size: 1.125rem; margin-bottom: 4rem; }
+        .pill { background: #1e293b; padding: 0.25rem 0.75rem; border-radius: 0.25rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 class="text-6xl font-extrabold leading-tight tracking-tight text-white">${title}</h1>
+        </div>
+        
+        <div class="meta">
+            <span class="pill">${boardData.value.lists[activeCard.value.listIndex]?.title || 'List'}</span>
+        </div>
+
+        <div class="markdown-body">
+            ${tempDiv.innerHTML}
+        </div>
+    </div>
+</body>
+</html>`;
+
+                    // 4. Trigger Download
+                    const blob = new Blob([htmlContent], { type: 'text/html' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    // Sanitized filename
+                    const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                    a.download = `presentation-${safeTitle}.html`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    showToast("Presentation exported successfully!", "success");
+
+                } catch (e) {
+                    console.error(e);
+                    showToast("Export failed: " + e.message, "error");
+                } finally {
+                    isExporting.value = false;
+                }
+            };
             const publishToWp = async () => {
                 const site = currentWpSite.value;
                 if (!site) return alert("Please select a site");
@@ -2725,6 +4145,7 @@ class App {
             
             // --- Reactive State: UI & Modals ---
             const isModalOpen = ref(false);           // Card Edit Modal
+            const isPresentationMode = ref(false);
             const isSidebarOpen = ref(localStorage.getItem('beckon_sidebar_open') === 'true');
             const isActivityOpen = ref(localStorage.getItem('beckon_activity_open') !== 'false');
             const isActivityMaximized = ref(false);
@@ -2738,10 +4159,21 @@ class App {
             const showMoveModalState = ref(false);
             const isArchiveOpen = ref(false);
             const reactingToCommentId = ref(null);
+            const isMobileMenuOpen = ref(false);
 
             // --- Reactive State: Inputs & Temporary ---
             const boardSearch = ref('');
             const archiveSearch = ref('');
+            
+            // --- Reactive State: Global Search ---
+            const showSearchModal = ref(false);
+            const searchQuery = ref('');
+            const searchResults = ref([]);
+            const isSearching = ref(false);
+            const selectedSearchIndex = ref(0);
+            const searchBoardFilter = ref('');
+            const searchStats = ref({ available: false, card_count: 0, last_reindex: 0 });
+            let searchDebounceTimer = null;
             const newBoardTitle = ref('');
             const tempBoardTitle = ref('');
             const activityTab = ref('comments');
@@ -2765,11 +4197,14 @@ class App {
             const moveContext = ref({ lIdx: null, cIdx: null });
             const moveDestination = ref({ boardId: '', listId: null });
             const isDraggingCover = ref(false);
+            const longPressCard = ref(null);
+            let longPressTimer = null;
 
             // --- Reactive State: Active Card Context ---
             const activeCard = ref({ listIndex: null, cardIndex: null, data: {} });
             const activeCardMeta = ref({ comments: [], activity: [], revisions: [], assigned_to: [], checklists: [] });
             const originalDescription = ref('');
+            const isLoadingCard = ref(false);
             
             // --- Reactive State: System/Import ---
             const updateAvailable = ref(false);
@@ -2808,38 +4243,73 @@ class App {
 
             const saveLocal = () => localStorage.setItem(`beckon_${currentBoardId.value}`, JSON.stringify(boardData.value));
             
-            const persistLayout = () => { 
-                saveLocal(); 
-                api('save_layout', boardData.value).then(() => { 
-                    const b = availableBoards.value.find(b => b.id === currentBoardId.value); 
-                    if(b) b.name = boardData.value.title; 
-                }).catch(()=>{}); 
+            // Track when we last saved to ignore our own SSE events
+            let lastSaveTime = 0;
+            const SAVE_DEBOUNCE_MS = 2000;
+
+            const persistLayout = () => {
+                saveLocal();
+                lastSaveTime = Date.now();
+                api('save_layout', boardData.value).then(() => {
+                    const b = availableBoards.value.find(b => b.id === currentBoardId.value);
+                    if(b) b.name = boardData.value.title;
+                }).catch(()=>{});
             };
 
-            const persistCardDesc = (c) => { 
-                if(c.id) { 
-                    saveLocal(); 
-                    api('save_card', {id: c.id, description: c.description}).catch(()=>{}); 
-                } 
+            const persistCardDesc = (c) => {
+                if(c.id) {
+                    saveLocal();
+                    lastSaveTime = Date.now();
+                    api('save_card', {id: c.id, description: c.description}).catch(()=>{});
+                }
             };
 
-            const persistMeta = (id, meta) => { 
-                if(id) api('save_card_meta', {id, meta}).catch(()=>{}); 
+            const persistMeta = (id, meta) => {
+                if(id) { lastSaveTime = Date.now(); api('save_card_meta', {id, meta}).catch(()=>{}); }
             };
 
             const loadData = async () => {
                 // Try network first
-                try { 
+                try {
                     const data = await api('load');
-                    if(data.lists) { 
-                        boardData.value = data; 
-                        saveLocal(); 
-                        return; 
-                    } 
+                    if(data.lists) {
+                        boardData.value = data;
+                        saveLocal();
+                        return;
+                    }
                 } catch(e){}
                 // Fallback to local
                 const local = localStorage.getItem(`beckon_${currentBoardId.value}`);
                 boardData.value = local ? JSON.parse(local) : { lists: [{ id: 'l1', title: 'Start', cards: [] }], users: [] };
+            };
+
+            // --- Server-Sent Events for external change detection ---
+            let eventSource = null;
+
+            const connectSSE = () => {
+                if (eventSource) { eventSource.close(); eventSource = null; }
+                if (!currentBoardId.value) return;
+
+                const url = `?action=events&board=${currentBoardId.value}`;
+                eventSource = new EventSource(url);
+
+                eventSource.addEventListener('board_updated', () => {
+                    // Ignore events triggered by our own saves
+                    if (Date.now() - lastSaveTime < SAVE_DEBOUNCE_MS) return;
+                    loadData();
+                });
+
+                eventSource.addEventListener('timeout', () => {
+                    // Server closed after max runtime, reconnect
+                    eventSource.close();
+                    connectSSE();
+                });
+
+                eventSource.onerror = () => {
+                    eventSource.close();
+                    // Reconnect after a delay
+                    setTimeout(connectSSE, 5000);
+                };
             };
 
             // --- Toast Notification System ---
@@ -2850,6 +4320,128 @@ class App {
                 toast.value = { show: true, message, type };
                 if (toastTimer) clearTimeout(toastTimer);
                 toastTimer = setTimeout(() => toast.value.show = false, 3000);
+            };
+
+            // --- Search System ---
+            const performSearch = async () => {
+                const query = searchQuery.value.trim();
+                if (query.length < 2) {
+                    searchResults.value = [];
+                    return;
+                }
+                
+                isSearching.value = true;
+                try {
+                    const res = await fetch(`?action=search`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            query, 
+                            board_id: searchBoardFilter.value || null,
+                            limit: 30 
+                        })
+                    }).then(r => r.json());
+                    
+                    searchResults.value = res.results || [];
+                    selectedSearchIndex.value = 0;
+                } catch (e) {
+                    console.error('Search failed:', e);
+                    searchResults.value = [];
+                } finally {
+                    isSearching.value = false;
+                }
+            };
+
+            const debouncedSearch = () => {
+                clearTimeout(searchDebounceTimer);
+                searchDebounceTimer = setTimeout(performSearch, 250);
+            };
+
+            const openSearchModal = () => {
+                showSearchModal.value = true;
+                searchQuery.value = '';
+                searchResults.value = [];
+                selectedSearchIndex.value = 0;
+                nextTick(() => document.getElementById('global-search-input')?.focus());
+            };
+
+            const closeSearchModal = () => {
+                showSearchModal.value = false;
+                searchQuery.value = '';
+            };
+
+            const navigateToSearchResult = async (result) => {
+                closeSearchModal();
+                
+                // Switch board if needed
+                if (result.board_id !== currentBoardId.value) {
+                    currentBoardId.value = result.board_id;
+                    localStorage.setItem('beckon_last_board', result.board_id);
+                    await loadData();
+                }
+                
+                // Find and open the card
+                let found = false;
+                for (let lIdx = 0; lIdx < boardData.value.lists.length; lIdx++) {
+                    const list = boardData.value.lists[lIdx];
+                    for (let cIdx = 0; cIdx < list.cards.length; cIdx++) {
+                        if (list.cards[cIdx].id === result.card_id) {
+                            openCardModal(lIdx, cIdx);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+                
+                // Check archive if not found in lists
+                if (!found && boardData.value.archive) {
+                    for (let cIdx = 0; cIdx < boardData.value.archive.length; cIdx++) {
+                        if (boardData.value.archive[cIdx].id === result.card_id) {
+                            isArchiveOpen.value = true;
+                            activeCard.value = { listIndex: -1, cardIndex: cIdx, data: { ...boardData.value.archive[cIdx] } };
+                            api('get_card', { id: result.card_id }).then(res => {
+                                activeCard.value.data.description = res.description;
+                                activeCardMeta.value = res.meta;
+                                isModalOpen.value = true;
+                            });
+                            break;
+                        }
+                    }
+                }
+            };
+
+            const handleSearchKeydown = (e) => {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    selectedSearchIndex.value = Math.min(selectedSearchIndex.value + 1, searchResults.value.length - 1);
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    selectedSearchIndex.value = Math.max(selectedSearchIndex.value - 1, 0);
+                } else if (e.key === 'Enter' && searchResults.value.length > 0) {
+                    e.preventDefault();
+                    navigateToSearchResult(searchResults.value[selectedSearchIndex.value]);
+                } else if (e.key === 'Escape') {
+                    closeSearchModal();
+                }
+            };
+
+            const rebuildSearchIndex = async () => {
+                if (!confirm('Rebuild the search index? This may take a moment for large boards.')) return;
+                try {
+                    const res = await fetch('?action=reindex', { method: 'POST' }).then(r => r.json());
+                    showToast(`Index rebuilt: ${res.indexed} cards indexed`, 'success');
+                    searchStats.value = res.stats;
+                } catch (e) {
+                    showToast('Reindex failed', 'error');
+                }
+            };
+
+            const fetchSearchStats = async () => {
+                try {
+                    const res = await fetch('?action=search_stats', { method: 'POST' }).then(r => r.json());
+                    searchStats.value = res;
+                } catch (e) {}
             };
 
 
@@ -2884,6 +4476,28 @@ class App {
 
             const syncStatusColor = computed(() => ({'synced':'bg-green-500','saving':'bg-yellow-500','offline':'bg-red-500'}[syncState.value]));
             const syncMessage = computed(() => syncState.value.toUpperCase());
+            
+            // Context menu positioning - centers on mobile, follows cursor on desktop
+            const contextMenuStyle = computed(() => {
+                const isMobile = window.innerWidth < 768;
+                if (isMobile) {
+                    return {
+                        top: '50%',
+                        left: '50%',
+                        transform: 'translate(-50%, -50%)'
+                    };
+                }
+                // Keep menu within viewport bounds on desktop
+                const menuWidth = 192;
+                const menuHeight = 350;
+                let x = contextMenu.value.x;
+                let y = contextMenu.value.y;
+                
+                if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 10;
+                if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 10;
+                
+                return { top: y + 'px', left: x + 'px' };
+            });
 
 
             // ====================================================================================
@@ -2894,10 +4508,11 @@ class App {
                 try { availableBoards.value = (await (await fetch('?action=list_boards')).json()).boards; } catch(e){} 
             };
 
-            const switchBoard = async () => { 
-                clearTimeout(debounceTimer); 
-                localStorage.setItem('beckon_last_board', currentBoardId.value); 
-                await loadData(); 
+            const switchBoard = async () => {
+                clearTimeout(debounceTimer);
+                localStorage.setItem('beckon_last_board', currentBoardId.value);
+                await loadData();
+                connectSSE();
             };
 
             const selectBoard = async (id) => { 
@@ -3075,6 +4690,7 @@ class App {
 
                 // 2. Fetch heavy data asynchronously
                 if(card.id) {
+                    isLoadingCard.value = true;
                     try {
                         // Using the new specialized endpoint
                         const res = await api('get_card', { id: card.id });
@@ -3093,6 +4709,8 @@ class App {
                     } catch(e) {
                         console.error("Failed to load card details", e);
                         alert("Could not load card details. Please check connection.");
+                    } finally {
+                        isLoadingCard.value = false;
                     }
                 }
             };
@@ -3126,6 +4744,13 @@ class App {
             };
 
             const closeModal = () => {
+                // Guard: Don't persist metadata if card data hasn't finished loading
+                // This prevents wiping revisions when API call is still in flight or failed
+                if (isLoadingCard.value) {
+                    isModalOpen.value = false;
+                    return;
+                }
+                
                 if (activeCard.value.data.description !== originalDescription.value) {
                     const newRev = { id: generateId(), date: new Date().toISOString(), text: originalDescription.value, user: currentUser.value.name };
                     activeCardMeta.value.revisions = activeCardMeta.value.revisions || [];
@@ -3370,6 +4995,34 @@ class App {
                 dragTarget.value = null;
             };
 
+            // Touch handlers for mobile long-press
+            const handleCardTouchStart = (e, l, c) => {
+                longPressCard.value = { l, c };
+                longPressTimer = setTimeout(() => {
+                    // Long press detected - show context menu
+                    const touch = e.touches[0];
+                    showContextMenu({ clientX: touch.clientX, clientY: touch.clientY, preventDefault: () => {} }, l, c);
+                    longPressCard.value = null;
+                }, 500);
+            };
+
+            const handleCardTouchEnd = () => {
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+                longPressCard.value = null;
+            };
+
+            const handleCardTouchMove = () => {
+                // Cancel long press if user moves finger
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+                longPressCard.value = null;
+            };
+
 
             // ====================================================================================
             // 7. USER MANAGEMENT
@@ -3429,6 +5082,7 @@ class App {
             watch(darkMode, (v) => { document.documentElement.classList.toggle('dark', v); localStorage.setItem('beckon_darkMode', v); }, { immediate: true });
             watch(isActivityOpen, (v) => localStorage.setItem('beckon_activity_open', v));
             watch(isSidebarOpen, (v) => localStorage.setItem('beckon_sidebar_open', v));
+            watch(searchQuery, debouncedSearch);
             watch(() => moveDestination.value.boardId, async (newBoardId) => {
                 if (newBoardId && newBoardId !== currentBoardId.value) {
                     try {
@@ -3490,17 +5144,36 @@ class App {
 
                 window.addEventListener('click', () => { if (contextMenu.value.show) contextMenu.value.show = false; });
                 
+                // Fetch search stats on load
+                fetchSearchStats();
+                
                 // Keyboard Shortcuts
                 window.addEventListener('keydown', (e) => {
                     if (e.key === 'Escape') {
+                        if (showSearchModal.value) { closeSearchModal(); return; }
+                        if (isPresentationMode.value) { isPresentationMode.value = false; return; }
                         if (showCreateBoardModal.value) showCreateBoardModal.value = false;
                         else if (showRenameModal.value) showRenameModal.value = false;
                         else if (isBoardSwitcherOpen.value) isBoardSwitcherOpen.value = false;
                         else if (isModalOpen.value) closeModal();
                         else if (showBoardSelector.value) showBoardSelector.value = false;
                     }
+                    
+                    // Global search shortcuts
+                    const isTyping = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+                    if (e.key === '/' && !isTyping && !showSearchModal.value) {
+                        e.preventDefault();
+                        openSearchModal();
+                        return;
+                    }
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                        e.preventDefault();
+                        openSearchModal();
+                        return;
+                    }
+                    
                     if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
-                    if (isModalOpen.value || showCreateBoardModal.value || showRenameModal.value || showBoardSelector.value || isUsersModalOpen.value) return;
+                    if (isModalOpen.value || showCreateBoardModal.value || showRenameModal.value || showBoardSelector.value || isUsersModalOpen.value || showSearchModal.value) return;
 
                     if (hoveredCard.value.l !== null && hoveredCard.value.c !== null) {
                         if (e.key === 'Enter') { e.preventDefault(); openCardModal(hoveredCard.value.l, hoveredCard.value.c); }
@@ -3537,13 +5210,13 @@ class App {
             return {
                 // Config & State
                 version, currentUser, darkMode, syncState, syncStatusColor, syncMessage,
-                boardData, currentBoardId, availableBoards, 
+                boardData, currentBoardId, availableBoards, isExporting, exportPresentation,
                 
                 // UI Controls
-                isModalOpen, isSidebarOpen, isActivityOpen, isActivityMaximized, activityTab,
+                isModalOpen, isSidebarOpen, isActivityOpen, isActivityMaximized, activityTab, isPresentationMode,
                 showBoardSelector, isBoardSwitcherOpen, showCreateBoardModal, showRenameModal, toast, showToast,
                 showImportModal, showCoverModalState, showMoveModalState, isArchiveOpen, isUsersModalOpen,
-                isDraggingCover, handleCoverDrop, handleCoverFileSelect, activeCoverTarget,
+                isDraggingCover, handleCoverDrop, handleCoverFileSelect, activeCoverTarget, isMobileMenuOpen,
                 
                 // Search & Filters
                 boardSearch, boardSearchInput, filteredBoards, 
@@ -3651,6 +5324,7 @@ class App {
                 
                 // Drag & Drop
                 dragTarget, dragSource, startDrag, startListDrag, onDrop, onDragEnd, onCardDragOver, onListDragOver, hoveredCard,
+                longPressCard, handleCardTouchStart, handleCardTouchEnd, handleCardTouchMove, contextMenuStyle,
 
                 // Trello Import
                 importMeta, importStep, importProgress,
@@ -3880,7 +5554,13 @@ class App {
                 performUpdate: async () => { 
                     if(!confirm(`Install update ${latestVersion.value}?`)) return;
                     try { await api('perform_update', { version: latestVersion.value }); alert("Done! Reloading..."); window.location.reload(); } catch(e) { alert("Failed: "+e.message); }
-                }
+                },
+
+                // Search
+                showSearchModal, searchQuery, searchResults, isSearching, selectedSearchIndex,
+                searchBoardFilter, searchStats,
+                openSearchModal, closeSearchModal, performSearch, navigateToSearchResult,
+                handleSearchKeydown, rebuildSearchIndex
             };
         }
     })
