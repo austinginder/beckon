@@ -2430,6 +2430,7 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .col-head input:focus { background: var(--surface); box-shadow: 0 0 0 2px var(--accent); }
 .col-count { font-size: 11px; font-weight: 600; color: var(--muted); background: var(--surface-3); border-radius: 999px; padding: 1px 7px; }
 .col-body { flex: 1; min-height: 30px; overflow-y: auto; padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 8px; }
+.col-body > * { flex: none; }
 .col-foot { padding: 4px 8px 8px; }
 .add-card { width: 100%; display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border-radius: 8px; color: var(--muted); font-weight: 600; font-size: 13px; }
 .add-card:hover { background: var(--surface-3); color: var(--text); }
