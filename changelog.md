@@ -4,7 +4,7 @@
 
 ### 🎨 New interface
 * **Built from scratch, no frameworks:** Vue, Tailwind, markdown-it, dayjs and Tribute are gone. The interface is now hand-written CSS and JavaScript inside `index.php`, with a custom SVG icon set and a custom Markdown engine. Beckon makes no requests to any CDN.
-* **Design tokens with light and dark themes:** follows the system preference by default, with a toggle in the top bar and no flash of the wrong theme on load.
+* **Design tokens with light and dark themes:** follows the system preference by default, with a toggle in the top bar and no flash of the wrong theme on load. Right-click the toggle to pick Light, Dark or System.
 * **Inline card composer:** type a title and press Enter to add a card, instead of a "New Card" placeholder.
 * **Labels with names on the board:** labels render as named pills rather than bare color bars.
 * **Card window:** segmented Edit / Split / Preview control, resizable panes, collapsible activity drawer, and a details sidebar that becomes an overlay on phones.

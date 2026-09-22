@@ -2674,6 +2674,7 @@ const ICONS = {
     bolt: 'M13 3L5 13.5h6L10 21l9-11h-6l0-7z',
     bell: 'M6 16.5V11a6 6 0 0112 0v5.5l1.5 2h-15l1.5-2zM10 20.5a2 2 0 004 0',
     at: 'M16 12a4 4 0 11-8 0 4 4 0 018 0zM16 12v1.5a2.5 2.5 0 005 0V12a9 9 0 10-3.5 7.1',
+    monitor: 'M4 5.5A1.5 1.5 0 015.5 4h13A1.5 1.5 0 0120 5.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 14.5v-9zM12 15v4M8.5 19h7',
 };
 const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[name] || ''}"/></svg>`;
 const LOGO = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#f2b134"/><path d="M13 24h6l-1.2-9h-3.6z" fill="#1a1f2b"/><path d="M12.5 13.5h7" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="10.5" r="2.2" fill="#1a1f2b"/><path d="M9.5 9l2.4 1.2M22.5 9l-2.4 1.2M8.2 13.2l2.6-.4M23.8 13.2l-2.6-.4" stroke="#1a1f2b" stroke-width="1.6" stroke-linecap="round"/><path d="M10 25.5h12" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/></svg>`;
@@ -3017,7 +3018,19 @@ function refreshDescFlags(card) {
 
 /* ---------- Theme ---------- */
 const isDark = () => { const t = document.documentElement.getAttribute('data-theme'); return t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches; };
-function toggleTheme() { const next = isDark() ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', next); try { localStorage.setItem('beckon_theme', next); } catch (e) {} renderTopbar(); }
+const themeMode = () => document.documentElement.getAttribute('data-theme') || 'system';
+function setTheme(mode) {
+    if (mode === 'system') { document.documentElement.removeAttribute('data-theme'); try { localStorage.removeItem('beckon_theme'); localStorage.removeItem('beckon_darkMode'); } catch (e) {} }
+    else { document.documentElement.setAttribute('data-theme', mode); try { localStorage.setItem('beckon_theme', mode); } catch (e) {} }
+    renderTopbar();
+}
+function toggleTheme() { setTheme(isDark() ? 'light' : 'dark'); }
+function showThemeCtx(x, y) {
+    const cur = themeMode();
+    const row = (mode, label, ic) => `<button data-x="${mode}">${icon(ic, 'sm')} ${label}<span style="margin-left:auto;color:var(--accent)">${cur === mode ? icon('check', 'sm') : ''}</span></button>`;
+    const el = ctxAt(x, y, row('light', 'Light', 'sun') + row('dark', 'Dark', 'moon') + row('system', 'System', 'monitor'));
+    on(el, 'click', '[data-x]', (e, t) => { closeCtx(); setTheme(t.dataset.x); });
+}
 
 /* ---------- Popovers ---------- */
 function closePop() { $$('.pop, .mobile-menu').forEach((p) => p.remove()); S.ui.pop = null; S.ui.mobileMenu = false; const mb = $('[data-act="mobile-menu"]'); if (mb) mb.innerHTML = icon('menu'); }
@@ -3056,7 +3069,7 @@ function renderTopbar() {
                 ${hasBoard ? `<div style="position:relative" id="archive-wrap"><button class="btn" data-act="archive">${icon('archive', 'sm')} Archive ${archived ? `<span class="count">${archived}</span>` : ''}</button></div>
                 <button class="btn" data-act="users">${icon('users', 'sm')} Users ${users ? `<span class="count">${users}</span>` : ''}</button>` : ''}
                 <div class="tb-sep"></div>
-                <button class="ibtn" data-act="theme" title="Toggle light / dark">${icon(isDark() ? 'sun' : 'moon')}</button>
+                <button class="ibtn" data-act="theme" title="Toggle light / dark. Right-click for system">${icon(isDark() ? 'sun' : 'moon')}</button>
                 <div style="position:relative" id="identity-wrap"><button class="ibtn identity-btn" data-act="identity" title="Your identity" style="padding:0;border-radius:50%">${meAvatar()}</button></div>
                 <button class="btn primary" data-act="new-board">${icon('plus', 'sm')} New board</button>
             </div>
@@ -3078,6 +3091,7 @@ function mobileMenuHtml() {
             <button data-act="settings">${icon('pencil')} Board settings</button>` : ''}
             <button data-act="identity-m">${icon('user')} Your identity</button>
             <button data-act="theme">${icon(isDark() ? 'sun' : 'moon')} ${isDark() ? 'Light mode' : 'Dark mode'}</button>
+            ${themeMode() !== 'system' ? `<button data-act="theme-system">${icon('monitor')} Follow system theme</button>` : ''}
             <div class="divider"></div>
             <button data-act="new-board" style="color:var(--accent-ink);font-weight:700">${icon('plus')} New board</button>
         </div>`;
@@ -3094,11 +3108,13 @@ function bindTopbar() {
         else if (act === 'archive-m') { closePop(); openArchiveModal(); }
         else if (act === 'users') { closePop(); openUsersModal(); }
         else if (act === 'theme') toggleTheme();
+        else if (act === 'theme-system') { closePop(); setTheme('system'); }
         else if (act === 'identity') openIdentityPop();
         else if (act === 'identity-m') { closePop(); openIdentityModal(); }
         else if (act === 'new-board') { closePop(); openCreateBoard(); }
         else if (act === 'mobile-menu') { if (S.ui.mobileMenu) { closePop(); } else { closePop(); tb.insertAdjacentHTML('beforeend', mobileMenuHtml()); S.ui.mobileMenu = true; S.ui.pop = 'mobile'; t.innerHTML = icon('close'); setSync(S.sync); } }
     });
+    tb.addEventListener('contextmenu', (e) => { const t = e.target.closest('[data-act="theme"]'); if (t) { e.preventDefault(); showThemeCtx(e.clientX, e.clientY); } });
     on(tb, 'change', '[data-import-file]', (e, t) => { handleImportFile(t.files[0]); t.value = ''; closePop(); });
 }
 function openSwitcher() {
