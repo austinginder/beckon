@@ -26,14 +26,17 @@ The rebuild release. Beckon 2.0 drops every third-party library and ships an int
 
 ### 🔒 Security
 * **Uploads can no longer run as code:** uploads keep only known safe file types, so a `.php` (or `.phtml`, `.htaccess` and so on) can't be dropped into a board and executed. Avatars accept images only. Imported Trello attachments of any other type are kept but saved as inert `.bin` files, and only http and https links are fetched. On Apache, `boards/.htaccess` adds a second layer.
-* **Other websites can't drive your board:** Beckon still has no login and anyone who can open it can use it, but requests that a different website sends through your browser are now refused.
+* **Other websites can't drive your board:** Beckon still has no login and anyone who can open it can use it, but requests that a different website sends through your browser are now refused. Changes must be sent as POST requests, so a link or image on another page can't trigger one either. Beckon behind a reverse proxy keeps working.
 * **Card ids are checked:** card ids can only name files inside their own board, which closes a path to reading, overwriting or deleting other files, including the updater's state.
-* **Safer Markdown:** raw HTML in cards and comments still works, but scripts, event handlers and `javascript:` links are stripped before anything is shown.
+* **Safer Markdown:** raw HTML in cards and comments still works, but scripts, event handlers and `javascript:` links are stripped before anything is shown, including links that SVG animation would write in after the fact.
 * **Sync hardening:** synced uploads and card ids are held to the same rules, and a pairing PIN is cancelled after five wrong guesses.
 * **The updater re-reads the release from GitHub before installing** instead of trusting its cache.
 
 ### 🐛 Fixes
 * **Two tabs on one board no longer overwrite each other:** every board now carries a revision number. When a tab saves on top of changes it has not seen (another tab, the CLI, a card moved in from another board), Beckon merges both sides and saves again: cards added, moved, edited, archived or deleted in either place all survive. Rapid edits are batched into fewer saves.
+* **Merges keep both sides of the same card:** when one tab moves or relabels a card and another renames it, both changes land. A list deleted in one tab no longer takes cards that another tab had just added to it; those go to the archive.
+* **Comments from two tabs both survive:** comments, edits, deletes and reactions are saved one at a time on the server, so a tab with an older copy of the card can't drop someone else's comment. An open card shows comments added elsewhere. The device sync API follows the same rule and writes under the board lock.
+* **The CLI won't overwrite a board that changed while it ran:** it stops with a message to run the command again.
 * **Touch reordering:** on phones and tablets, hold a card to pick it up and drag it within a list or to another one, with the board scrolling at the edges. Hold a list's header to move the list. Holding without moving still opens the card menu, and swipes still scroll.
 * **Changes made elsewhere no longer get wiped:** a card added from another tab or the CLI while you had a card open is kept, and your own saves no longer hide other people's updates for two seconds.
 * **Deletes and archives always hit the card you picked,** even if the board reloads while the confirm dialog is open.
@@ -46,9 +49,12 @@ The rebuild release. Beckon 2.0 drops every third-party library and ships an int
 * **Renaming a board keeps search results, covers and avatars working.**
 * **Cards in long lists keep their height** and the list scrolls instead.
 * **Archived cards from early versions open again.**
+* **Live reload uses short streams:** each connection lasts 30 seconds and reconnects, which frees server workers quickly, and a change made between two connections is still picked up.
+* **Members from 1.0 boards are kept:** 1.0 stored some board members only inside `layout.json`. They move to `users.json` on the first save instead of disappearing.
+* **Trello import:** due dates land on the right day in your time zone, and card covers point at the same file name the attachment was saved under. Attachments such as `.msg`, `.eml`, `.vcf` and `.ics` keep their extension.
 * **Live reload on PHP's built-in server:** `php -S` answers one request at a time unless `PHP_CLI_SERVER_WORKERS` says otherwise, and the live reload stream held that one request, so every other tab and API call stalled while a board was open. On a single-worker server Beckon now says so once and the board runs without live reload; the readme's quick start sets four workers. On every server the stream sends a keep-alive comment every 15 seconds so a closed tab frees its worker promptly.
 * **Leftover 1.0 backup:** the 1.0 updater left `index.php.bak` next to the app, where a web server serves it as plain text. The first update check after upgrading moves it into `boards/.updates/` under the name the Restore link understands.
-* **WordPress publishing:** images now become proper image blocks in the draft. The transform previously never matched and swapped the id and URL.
+* **WordPress publishing:** images now become proper image blocks in the draft. The transform previously never matched and swapped the id and URL. The editor's internal line markers no longer leak into the published post.
 * **Standalone export:** the exported presentation is self-contained and no longer loads Tailwind from a CDN.
 
 ## [1.0.0] - 2025-12-15

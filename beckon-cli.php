@@ -322,15 +322,21 @@ class Board {
         
         if (!isset($data['archive'])) $data['archive'] = [];
         if (!isset($data['lists'])) $data['lists'] = [];
+        $this->loadedRev = (int) ($data['rev'] ?? 0);
         
         return $data;
     }
+    private $loadedRev = 0;
     
     public function saveLayout() {
         FileOps::withBoardLock($this->id, function() {
             // Bump the revision so open browser tabs know their copy is stale.
             $cur = json_decode(@file_get_contents("{$this->dir}/layout.json"), true);
-            $this->layout['rev'] = (int) ($cur['rev'] ?? 0) + 1;
+            $diskRev = (int) ($cur['rev'] ?? 0);
+            // Someone saved the board while this command ran: refuse rather than overwrite them.
+            if ($diskRev !== $this->loadedRev) throw new \Exception("The board changed while this command ran. Nothing was saved; run it again.");
+            $this->layout['rev'] = $diskRev + 1;
+            $this->loadedRev = $this->layout['rev'];
             unset($this->layout['users']);
             FileOps::atomicWrite("{$this->dir}/layout.json", $this->layout);
         });

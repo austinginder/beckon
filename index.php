@@ -33,7 +33,7 @@ class App {
     }
 
     /** Extensions an upload may keep. Anything a web server could execute or render as a page is missing on purpose. */
-    const UPLOAD_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic', 'bmp', 'ico', 'pdf', 'txt', 'md', 'csv', 'json', 'log', 'rtf', 'zip', 'gz', 'tar', '7z', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'key', 'numbers', 'pages', 'mp3', 'm4a', 'wav', 'ogg', 'mp4', 'mov', 'webm', 'psd', 'ai', 'sketch', 'fig', 'eps'];
+    const UPLOAD_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic', 'bmp', 'ico', 'pdf', 'txt', 'md', 'csv', 'json', 'log', 'rtf', 'zip', 'gz', 'tar', '7z', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'key', 'numbers', 'pages', 'mp3', 'm4a', 'wav', 'ogg', 'mp4', 'mov', 'webm', 'psd', 'ai', 'sketch', 'fig', 'eps', 'msg', 'eml', 'vcf', 'ics', 'bin'];
     const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic', 'bmp', 'ico'];
 
     /** Returns the lowercased extension if allowed, else throws. */
@@ -65,6 +65,18 @@ class App {
         return $layout['rev'];
     }
 
+    /**
+     * File name an imported attachment is stored under. Shared by the attachment download and
+     * the card cover path, so the two can't drift apart. Unknown types become inert .bin files.
+     */
+    private function attachmentFilename($rawName, $url, $attachmentId = '') {
+        $ext = strtolower(pathinfo((string) $rawName, PATHINFO_EXTENSION) ?: pathinfo((string) parse_url((string) $url, PHP_URL_PATH), PATHINFO_EXTENSION));
+        $clean = preg_replace('/[^a-z0-9-]/i', '-', pathinfo((string) $rawName, PATHINFO_FILENAME)) ?: 'file';
+        if (!in_array($ext, self::UPLOAD_EXTS, true)) { $clean .= $ext !== '' ? '-' . preg_replace('/[^a-z0-9]/', '', $ext) : ''; $ext = 'bin'; }
+        $id = preg_replace('/[^a-z0-9]/i', '', (string) $attachmentId);
+        return strtolower($id !== '' ? "$clean-$id.$ext" : "$clean.$ext");
+    }
+
     /** Card ids are file names inside the board folder: dates, uuids, Trello hex ids, old numeric ids. */
     private function isCardId($id) { return is_scalar($id) && preg_match('/^[A-Za-z0-9_-]{1,128}$/', (string) $id); }
     private function cardId($id) { if (!$this->isCardId($id)) throw new Exception("Invalid card id"); return (string) $id; }
@@ -74,6 +86,32 @@ class App {
         if (isset($_GET['action'])) {
             $this->handleApi($_GET['action']);
         }
+    }
+
+    /**
+     * True for requests Beckon's own page (or a non-browser client) could have sent.
+     * Modern browsers label every request with Sec-Fetch-Site; only same-origin and a typed-in
+     * URL ("none") pass. Without that header, a present Origin must match the host the visitor
+     * used (a reverse proxy's X-Forwarded-Host counts). Writes also need POST, so an <img> or a
+     * link on another site can't trigger anything.
+     */
+    private function isSameSiteRequest($action) {
+        // The device sync API may use GET (the app sends no browser headers, so the checks below pass it).
+        if ($action !== 'events' && strpos($action, 'sync_') !== 0 && ($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') return false;
+        $site = strtolower($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '');
+        if ($site !== '') return $site === 'same-origin' || $site === 'none';
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        if ($origin === '') return true; // curl, the CLI, scripts
+        if ($origin === 'null') return false;
+        $norm = function ($host) {
+            $host = strtolower(trim(explode(',', (string) $host)[0]));
+            return preg_replace(['/:443$/', '/:80$/'], '', $host);
+        };
+        $originHost = parse_url($origin, PHP_URL_HOST) . (parse_url($origin, PHP_URL_PORT) ? ':' . parse_url($origin, PHP_URL_PORT) : '');
+        foreach ([$_SERVER['HTTP_X_FORWARDED_HOST'] ?? '', $_SERVER['HTTP_HOST'] ?? ''] as $h) {
+            if ($h !== '' && $norm($originHost) === $norm($h)) return true;
+        }
+        return false;
     }
 
     private function handleApi($action) {
@@ -88,10 +126,7 @@ class App {
         // Beckon has no login on purpose, but other web pages must not drive it through the
         // visitor's browser. Browsers label cross-site requests; curl, the CLI and the sync app
         // send neither header and are unaffected.
-        $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '';
-        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-        $originHost = $origin ? (parse_url($origin, PHP_URL_HOST) . (parse_url($origin, PHP_URL_PORT) ? ':' . parse_url($origin, PHP_URL_PORT) : '')) : '';
-        if ($site === 'cross-site' || ($origin && $origin !== 'null' && strcasecmp($originHost, $_SERVER['HTTP_HOST'] ?? '') !== 0) || $origin === 'null') {
+        if (!$this->isSameSiteRequest($action)) {
             http_response_code(403);
             echo json_encode(['error' => 'Cross-site requests are not allowed.']);
             exit;
@@ -360,9 +395,7 @@ class App {
             $coverImagePath = null;
             if (!empty($c['idAttachmentCover']) && isset($attachmentMap[$c['idAttachmentCover']])) {
                 $att = $attachmentMap[$c['idAttachmentCover']];
-                $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($att['name'], PATHINFO_FILENAME));
-                $filename = strtolower($cleanName . '-' . $att['id'] . '.' . $att['ext']);
-                $coverImagePath = "boards/$slug/uploads/$filename";
+                $coverImagePath = "boards/$slug/uploads/" . $this->attachmentFilename($att['name'], $att['url'], $att['id']);
             }
 
             $cardChecklists = [];
@@ -457,18 +490,14 @@ class App {
 
         // Name Generation
         $rawName = $input['name'] ?? 'file';
-        $ext = strtolower(pathinfo($rawName, PATHINFO_EXTENSION) ?: pathinfo((string) parse_url($input['url'], PHP_URL_PATH), PATHINFO_EXTENSION));
-        $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME)) ?: 'file';
-        // Keep attachments of any type, but never with an extension a server could execute.
-        if (!in_array($ext, self::UPLOAD_EXTS, true)) { $cleanName .= $ext !== '' ? '-' . preg_replace('/[^a-z0-9]/', '', $ext) : ''; $ext = 'bin'; }
-        if (!empty($input['attachmentId'])) $input['attachmentId'] = preg_replace('/[^a-z0-9]/i', '', $input['attachmentId']);
-        
+        $ext = pathinfo($this->attachmentFilename($rawName, $input['url']), PATHINFO_EXTENSION);
         if (!empty($input['attachmentId'])) {
-            $filename = strtolower("$cleanName-{$input['attachmentId']}.$ext");
+            $filename = $this->attachmentFilename($rawName, $input['url'], $input['attachmentId']);
         } else {
-            $filename = strtolower("$cleanName.$ext");
+            $filename = $this->attachmentFilename($rawName, $input['url']);
+            $stem = pathinfo($filename, PATHINFO_FILENAME);
             $counter = 1;
-            while(file_exists("$uploadDir/$filename")) $filename = strtolower("$cleanName-" . $counter++ . ".$ext");
+            while (file_exists("$uploadDir/$filename")) $filename = "$stem-" . $counter++ . ".$ext";
         }
 
         // Curl Download (http and https only: no file://, gopher:// and friends)
@@ -1106,8 +1135,10 @@ class App {
                     break;
                 case 'delete_card':
                     if ($this->isCardId($id)) {
-                        @unlink("$boardDir/$id.md");
-                        @unlink("$boardDir/$id.json");
+                        $this->withBoardLock($this->slugify($boardId), function () use ($boardDir, $id) {
+                            @unlink("$boardDir/$id.md");
+                            @unlink("$boardDir/$id.json");
+                        });
                         $results[] = ['board' => $boardId, 'type' => $type, 'id' => $id, 'status' => 'deleted'];
                         continue 2;
                     }
@@ -1125,20 +1156,23 @@ class App {
             if ($clientModified >= $serverModified) {
                 // Client is newer or same age, accept the change
                 $data = ($encoding === 'base64') ? base64_decode($content) : $content;
-                
-                if ($type === 'layout' || $type === 'users' || $type === 'card_meta') {
-                    // Parse and re-encode JSON for consistency
-                    $jsonData = json_decode($data, true);
-                    if ($jsonData !== null && $type === 'layout' && is_array($jsonData)) {
-                        $this->writeLayout($path, $jsonData);
-                    } elseif ($jsonData !== null) {
-                        $this->atomicWrite($path, $jsonData);
+                $this->withBoardLock($this->slugify($boardId), function () use ($type, $data, $path) {
+                    if ($type === 'layout' || $type === 'users' || $type === 'card_meta') {
+                        // Parse and re-encode JSON for consistency
+                        $jsonData = json_decode($data, true);
+                        if (is_array($jsonData) && $type === 'layout') {
+                            $this->writeLayout($path, $jsonData);
+                        } elseif (is_array($jsonData) && $type === 'card_meta') {
+                            $this->atomicWrite($path, $this->mergeCardMeta($path, $jsonData));
+                        } elseif ($jsonData !== null) {
+                            $this->atomicWrite($path, $jsonData);
+                        } else {
+                            $this->atomicWrite($path, $data);
+                        }
                     } else {
                         $this->atomicWrite($path, $data);
                     }
-                } else {
-                    $this->atomicWrite($path, $data);
-                }
+                });
                 
                 // Update search index for cards
                 if ($type === 'card_md' || $type === 'card_meta') {
@@ -1382,15 +1416,7 @@ class App {
 
         $this->withBoardLock($boardId, function () use ($boardDir, $id, &$meta) {
             $path = "$boardDir/$id.json";
-            $cur = is_file($path) ? (json_decode(file_get_contents($path), true) ?? []) : null;
-            if (is_array($cur)) {
-                // Comments change only through the comment endpoints, so another tab's comment
-                // can't be dropped by this tab saving its (older) copy of the card.
-                if (array_key_exists('comments', $cur)) $meta['comments'] = $cur['comments'];
-                // Activity and revisions are logs: keep entries from both copies.
-                $meta['activity'] = $this->mergeLog($cur['activity'] ?? [], $meta['activity'] ?? [], fn($e) => ($e['date'] ?? '') . '|' . ($e['text'] ?? ''));
-                $meta['revisions'] = array_slice($this->mergeLog($cur['revisions'] ?? [], $meta['revisions'] ?? [], fn($e) => $e['id'] ?? (($e['date'] ?? '') . '|' . md5($e['text'] ?? ''))), 0, 50);
-            }
+            $meta = $this->mergeCardMeta($path, $meta);
             $this->atomicWrite($path, $meta);
         });
 
@@ -1398,6 +1424,20 @@ class App {
         $this->reindexCard($boardId, $boardDir, $id);
 
         return ['status' => 'saved', 'comments' => $meta['comments'] ?? []];
+    }
+
+    /**
+     * A card's JSON as saved by a client, reconciled with what is on disk. Comments change only
+     * through the comment endpoints, so a client saving its older copy can't drop someone else's
+     * comment. Activity and revisions are logs: entries from both copies are kept.
+     */
+    private function mergeCardMeta($path, array $meta) {
+        $cur = is_file($path) ? (json_decode(file_get_contents($path), true) ?? []) : null;
+        if (!is_array($cur)) return $meta;
+        if (array_key_exists('comments', $cur)) $meta['comments'] = $cur['comments'];
+        $meta['activity'] = $this->mergeLog($cur['activity'] ?? [], $meta['activity'] ?? [], fn($e) => ($e['date'] ?? '') . '|' . ($e['text'] ?? ''));
+        $meta['revisions'] = array_slice($this->mergeLog($cur['revisions'] ?? [], $meta['revisions'] ?? [], fn($e) => $e['id'] ?? (($e['date'] ?? '') . '|' . md5($e['text'] ?? ''))), 0, 50);
+        return $meta;
     }
 
     /** Union of two logs by key, newest first. */
@@ -3226,13 +3266,13 @@ const md = (() => {
 function sanitizeHtml(html) {
     if (!/[<&]/.test(html)) return html;
     const t = document.createElement('template'); t.innerHTML = html;
-    const DROP = 'script,style,iframe,frame,frameset,object,embed,applet,link,meta,base,form,noscript,template,portal,math';
+    const DROP = 'script,style,iframe,frame,frameset,object,embed,applet,link,meta,base,form,noscript,template,portal,math,animate,set,animateMotion,animateTransform,animatemotion,animatetransform,discard,handler,listener';
     t.content.querySelectorAll(DROP).forEach((n) => n.remove());
     const bad = (v) => /^(javascript|vbscript|data):/i.test(String(v).replace(/[\u0000-\u0020\u007f-\u009f]/g, ''));
     t.content.querySelectorAll('*').forEach((el) => {
         for (const a of Array.from(el.attributes)) {
             const n = a.name.toLowerCase();
-            if (n.startsWith('on') || n === 'srcdoc' || n === 'formaction' || n === 'action') { el.removeAttribute(a.name); continue; }
+            if (n.startsWith('on') || n === 'srcdoc' || n === 'formaction' || n === 'action' || n === 'attributename') { el.removeAttribute(a.name); continue; }
             if (['href', 'src', 'xlink:href', 'poster', 'background', 'cite', 'srcset'].includes(n) && bad(a.value) && !(n === 'src' && el.tagName === 'IMG' && /^data:image\//i.test(a.value.trim()))) el.removeAttribute(a.name);
         }
         if (el.tagName === 'INPUT' && el.type !== 'checkbox') el.remove();
@@ -3447,6 +3487,8 @@ function mergeLayout(base, local, remote) {
     // Lists: added, renamed, deleted, reordered here win; lists only the other side touched stay as they are.
     const bl = new Map(base.lists.map((l) => [l.id, l])), ll = new Map(local.lists.map((l) => [l.id, l]));
     local.lists.forEach((l) => { const r = out.lists.find((x) => x.id === l.id); if (!bl.has(l.id)) { if (!r) out.lists.push({ ...JSON.parse(JSON.stringify(l)), cards: [] }); } else if (r && l.title !== bl.get(l.id).title) r.title = l.title; });
+    // A list deleted here goes, but cards the other side added to it (never seen here) are archived, not lost.
+    out.lists.filter((l) => bl.has(l.id) && !ll.has(l.id)).forEach((l) => l.cards.forEach((c) => { if (!B.has(String(c.id))) out.archive.unshift(c); }));
     out.lists = out.lists.filter((l) => !(bl.has(l.id) && !ll.has(l.id)));
     const common = (arr) => arr.map((l) => l.id).filter((id) => bl.has(id) && ll.has(id));
     if (canon(common(local.lists)) !== canon(common(base.lists))) { const order = local.lists.map((l) => l.id); const pos = (id) => { const i = order.indexOf(id); return i < 0 ? 1e9 : i; }; out.lists.sort((a, b) => pos(a.id) - pos(b.id)); }
@@ -3455,13 +3497,21 @@ function mergeLayout(base, local, remote) {
     // Cards deleted here.
     for (const id of B.keys()) if (!L.has(id)) take(id);
     // Cards edited here (a card the other side deleted stays deleted: its files are gone).
-    for (const [id, lc] of L) { const b = B.get(id), r = find(id); if (b && r && cardSig(lc.card) !== cardSig(b.card)) Object.assign(r, lc.card); }
+    // Only the fields this tab changed are applied, so the other side's edits to other fields survive.
+    for (const [id, lc] of L) {
+        const b = B.get(id), r = find(id); if (!b || !r || cardSig(lc.card) === cardSig(b.card)) continue;
+        for (const k of new Set([...Object.keys(lc.card), ...Object.keys(b.card)])) {
+            if (k === 'description') continue;
+            if (canon(lc.card[k]) === canon(b.card[k])) continue;
+            if (k in lc.card) r[k] = JSON.parse(JSON.stringify(lc.card[k])); else delete r[k];
+        }
+    }
     // Cards added, moved or reordered here, placed after the same neighbour, in this tab's order.
     const placed = new Set(); for (const [id, lc] of L) { const b = B.get(id); if (!b || b.box !== lc.box || b.prev !== lc.prev) placed.add(id); }
     const order = [...local.lists.flatMap((l) => l.cards.map((c) => [l.id, c])), ...(local.archive || []).map((c) => ['@archive', c])];
     for (const [boxId, c] of order) {
         const id = String(c.id); if (!placed.has(id) || (B.has(id) && !R.has(id))) continue;
-        const card = take(id) || JSON.parse(JSON.stringify(c)); Object.assign(card, c);
+        const card = take(id) || JSON.parse(JSON.stringify(c)); // an existing card only moves; its fields were merged above
         const target = boxId === '@archive' ? out.archive : (out.lists.find((l) => l.id === boxId) || out.lists[0] || {}).cards;
         if (!target) continue;
         const prev = L.get(id).prev; const pi = prev ? target.findIndex((x) => String(x.id) === prev) : -1;
