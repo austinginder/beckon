@@ -328,6 +328,10 @@ class Board {
     
     public function saveLayout() {
         FileOps::withBoardLock($this->id, function() {
+            // Bump the revision so open browser tabs know their copy is stale.
+            $cur = json_decode(@file_get_contents("{$this->dir}/layout.json"), true);
+            $this->layout['rev'] = (int) ($cur['rev'] ?? 0) + 1;
+            unset($this->layout['users']);
             FileOps::atomicWrite("{$this->dir}/layout.json", $this->layout);
         });
     }

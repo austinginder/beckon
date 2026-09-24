@@ -44,6 +44,18 @@ class App {
         return $ext;
     }
 
+    /**
+     * Writes a board layout with the next revision number. Every writer goes through here, so
+     * a browser tab can tell its copy is stale (see actionSaveLayout). Call inside the board lock.
+     */
+    private function writeLayout($path, array $layout) {
+        $cur = json_decode(@file_get_contents($path), true);
+        $layout['rev'] = (int) ($cur['rev'] ?? 0) + 1;
+        unset($layout['users'], $layout['baseRev']);
+        $this->atomicWrite($path, $layout);
+        return $layout['rev'];
+    }
+
     /** Card ids are file names inside the board folder: dates, uuids, Trello hex ids, old numeric ids. */
     private function isCardId($id) { return is_scalar($id) && preg_match('/^[A-Za-z0-9_-]{1,128}$/', (string) $id); }
     private function cardId($id) { if (!$this->isCardId($id)) throw new Exception("Invalid card id"); return (string) $id; }
@@ -394,7 +406,7 @@ class App {
             $this->atomicWrite("$targetDir/{$newId}.json", $meta);
         }
 
-        $this->atomicWrite("$targetDir/layout.json", [
+        $this->writeLayout("$targetDir/layout.json", [
             'title' => $json['name'], 'lists' => $lists, 'archive' => $archive
         ]);
 
@@ -1106,7 +1118,9 @@ class App {
                 if ($type === 'layout' || $type === 'users' || $type === 'card_meta') {
                     // Parse and re-encode JSON for consistency
                     $jsonData = json_decode($data, true);
-                    if ($jsonData !== null) {
+                    if ($jsonData !== null && $type === 'layout' && is_array($jsonData)) {
+                        $this->writeLayout($path, $jsonData);
+                    } elseif ($jsonData !== null) {
                         $this->atomicWrite($path, $jsonData);
                     } else {
                         $this->atomicWrite($path, $data);
@@ -1181,7 +1195,7 @@ class App {
         mkdir($p, 0755, true);
         mkdir("$p/uploads", 0755, true);
         
-        $this->atomicWrite("$p/layout.json", ['version' => 1, 'title' => $title, 'lists' => []]);
+        $this->writeLayout("$p/layout.json", ['version' => 1, 'title' => $title, 'lists' => []]);
         $this->atomicWrite("$p/users.json", new \stdClass());
         
         return ['status' => 'ok', 'id' => $slug];
@@ -1216,14 +1230,14 @@ class App {
             $layout = json_decode(file_get_contents("$boardDir/layout.json"), true) ?? [];
             $layout['title'] = $newTitle;
             if ($boardId === $newSlug) {
-                $this->atomicWrite("$boardDir/layout.json", $layout);
+                $this->writeLayout("$boardDir/layout.json", $layout);
                 $this->searchIndex->updateBoard($boardId, $boardId, $newTitle);
                 return ['status' => 'updated', 'id' => $boardId, 'name' => $newTitle];
             }
             // Upload links live in card text, card covers and member avatars.
             $old = "boards/$boardId/uploads/"; $new = "boards/$newSlug/uploads/";
             $layout = json_decode(str_replace($old, $new, json_encode($layout, JSON_UNESCAPED_SLASHES)), true);
-            $this->atomicWrite("$boardDir/layout.json", $layout);
+            $this->writeLayout("$boardDir/layout.json", $layout);
             foreach (array_merge(glob("$boardDir/*.md") ?: [], glob("$boardDir/*.json") ?: []) as $file) {
                 $c = file_get_contents($file);
                 $newC = str_replace([$old, str_replace('/', '\\/', $old)], [$new, str_replace('/', '\\/', $new)], $c);
@@ -1259,7 +1273,7 @@ class App {
             $data = $this->withBoardLock($boardId, function() use ($boardId, $boardDir, $layoutPath) {
                 $lockedData = json_decode(@file_get_contents($layoutPath), true) ?? [];
                 if ($this->migrateBoard($boardId, $boardDir, $lockedData)) {
-                    $this->atomicWrite($layoutPath, $lockedData);
+                    $lockedData['rev'] = $this->writeLayout($layoutPath, $lockedData);
                 }
                 return $lockedData;
             });
@@ -1269,6 +1283,7 @@ class App {
         if (!isset($data['lists'])) $data['lists'] = [['id' => 'l1', 'title' => 'Start', 'cards' => []]];
         if (!isset($data['archive'])) $data['archive'] = [];
         if (!isset($data['title'])) $data['title'] = ucfirst(basename($boardDir));
+        $data['rev'] = (int) ($data['rev'] ?? 0);
 
         $data['users'] = $users;
         return $data;
@@ -1302,7 +1317,18 @@ class App {
     }
 
     protected function actionSaveLayout($input, $boardId, $boardDir) {
+        if (!$boardDir || !is_file("$boardDir/layout.json")) throw new Exception("Board not found");
         return $this->withBoardLock($boardId, function() use ($input, $boardDir) {
+            // Refuse a save built on an older copy: the tab merges its changes into this one and retries.
+            $current = json_decode(@file_get_contents("$boardDir/layout.json"), true) ?? [];
+            $currentRev = (int) ($current['rev'] ?? 0);
+            if (array_key_exists('baseRev', $input) && (int) $input['baseRev'] !== $currentRev) {
+                http_response_code(409);
+                $current['rev'] = $currentRev;
+                unset($current['users']);
+                return ['error' => 'conflict', 'rev' => $currentRev, 'layout' => $current];
+            }
+
             // 1. Schema: Ensure version exists
             $input['version'] = $input['version'] ?? 1;
 
@@ -1319,8 +1345,8 @@ class App {
             }
             
             // 2. Write safely inside the lock
-            $this->atomicWrite("$boardDir/layout.json", $input);
-            return ['status' => 'saved', 'version' => 1, 'hash' => md5_file("$boardDir/layout.json")];
+            $rev = $this->writeLayout("$boardDir/layout.json", $input);
+            return ['status' => 'saved', 'version' => 1, 'rev' => $rev, 'hash' => md5_file("$boardDir/layout.json")];
         });
     }
 
@@ -1506,8 +1532,8 @@ class App {
                 $this->atomicWrite($metaFile, $meta);
 
                 // 5. Commit Writes
-                $this->atomicWrite("$boardDir/layout.json", $sourceLayout);
-                $this->atomicWrite("$targetPath/layout.json", $targetLayout);
+                $this->writeLayout("$boardDir/layout.json", $sourceLayout);
+                $this->writeLayout("$targetPath/layout.json", $targetLayout);
 
                 // 6. Update search index (card moved to new board)
                 $this->reindexCard($targetId, $targetPath, $cardId);
@@ -2541,6 +2567,10 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .card.hover { box-shadow: 0 0 0 2px var(--accent), var(--shadow-2); border-color: transparent; }
 .card.dragging { opacity: .4; }
 .card.pressing { transform: scale(.98); }
+.card.lifted, .col.lifted { transform: scale(1.03); box-shadow: var(--shadow-3); transition: transform .12s, box-shadow .12s; }
+.touch-ghost { position: fixed; z-index: 500; pointer-events: none; transform: rotate(2deg); box-shadow: var(--shadow-3); opacity: .96; margin: 0; }
+.board-wrap.touch-dragging { scroll-snap-type: none !important; }
+@media (hover: none) { .card, .col-head { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } }
 .card .cover { height: 120px; background: var(--surface-3); }
 .card .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .card-in { padding: 10px 11px 9px; }
@@ -3340,10 +3370,10 @@ async function api(action, payload = {}, board = S.boardId) {
     try {
         const res = await fetch(`?action=${action}&board=${encodeURIComponent(board || '')}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+        if (!res.ok) { const err = new Error(data.error || `Request failed (${res.status})`); err.status = res.status; err.data = data; throw err; }
         setTimeout(() => { if (S.sync === 'saving') setSync('synced'); }, 400);
         return data;
-    } catch (e) { setSync('offline'); throw e; }
+    } catch (e) { if (e.status === 409) setSync('synced'); else setSync('offline'); throw e; }
 }
 async function apiUpload(action, file, board = S.boardId) {
     const fd = new FormData(); fd.append('file', file);
@@ -3353,22 +3383,93 @@ async function apiUpload(action, file, board = S.boardId) {
     return data;
 }
 const saveLocal = () => lsSet(`beckon_${S.boardId}`, S.board);
+/* ---------- Layout saves: revisions and merging ----------
+   Every layout.json write bumps a revision. A tab sends the revision its copy is based on;
+   if the board moved on (another tab, the CLI, a card moved in from another board), the
+   server answers 409 with the newer layout and the tab merges its own changes into it,
+   then retries. One save per tab is in flight at a time; edits made meanwhile ride the next. */
+let layoutRev = 0, layoutBase = null, layoutSaving = null, layoutAgain = false;
+const layoutSnapshot = (b) => JSON.parse(JSON.stringify({ version: b.version, title: b.title, lists: b.lists || [], archive: b.archive || [] }));
+const canon = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)) ? Object.keys(x).sort().reduce((o, key) => (o[key] = x[key], o), {}) : x);
+function mergeLayout(base, local, remote) {
+    const out = JSON.parse(JSON.stringify(remote)); out.archive = out.archive || [];
+    base = base || { title: remote.title, lists: [], archive: [] };
+    const cardSig = (c) => { const x = { ...c }; delete x.description; return canon(x); };
+    const index = (b) => { const m = new Map(); (b.lists || []).forEach((l) => l.cards.forEach((c, i) => m.set(String(c.id), { box: l.id, prev: i ? String(l.cards[i - 1].id) : null, card: c }))); (b.archive || []).forEach((c, i) => m.set(String(c.id), { box: '@archive', prev: i ? String(b.archive[i - 1].id) : null, card: c })); return m; };
+    const B = index(base), L = index(local), R = index(out);
+    if (local.title !== base.title) out.title = local.title;
+    // Lists: added, renamed, deleted, reordered here win; lists only the other side touched stay as they are.
+    const bl = new Map(base.lists.map((l) => [l.id, l])), ll = new Map(local.lists.map((l) => [l.id, l]));
+    local.lists.forEach((l) => { const r = out.lists.find((x) => x.id === l.id); if (!bl.has(l.id)) { if (!r) out.lists.push({ ...JSON.parse(JSON.stringify(l)), cards: [] }); } else if (r && l.title !== bl.get(l.id).title) r.title = l.title; });
+    out.lists = out.lists.filter((l) => !(bl.has(l.id) && !ll.has(l.id)));
+    const common = (arr) => arr.map((l) => l.id).filter((id) => bl.has(id) && ll.has(id));
+    if (canon(common(local.lists)) !== canon(common(base.lists))) { const order = local.lists.map((l) => l.id); const pos = (id) => { const i = order.indexOf(id); return i < 0 ? 1e9 : i; }; out.lists.sort((a, b) => pos(a.id) - pos(b.id)); }
+    const take = (id) => { for (const l of out.lists) { const i = l.cards.findIndex((c) => String(c.id) === id); if (i > -1) return l.cards.splice(i, 1)[0]; } const a = out.archive.findIndex((c) => String(c.id) === id); return a > -1 ? out.archive.splice(a, 1)[0] : null; };
+    const find = (id) => { for (const l of out.lists) { const c = l.cards.find((x) => String(x.id) === id); if (c) return c; } return out.archive.find((x) => String(x.id) === id) || null; };
+    // Cards deleted here.
+    for (const id of B.keys()) if (!L.has(id)) take(id);
+    // Cards edited here (a card the other side deleted stays deleted: its files are gone).
+    for (const [id, lc] of L) { const b = B.get(id), r = find(id); if (b && r && cardSig(lc.card) !== cardSig(b.card)) Object.assign(r, lc.card); }
+    // Cards added, moved or reordered here, placed after the same neighbour, in this tab's order.
+    const placed = new Set(); for (const [id, lc] of L) { const b = B.get(id); if (!b || b.box !== lc.box || b.prev !== lc.prev) placed.add(id); }
+    const order = [...local.lists.flatMap((l) => l.cards.map((c) => [l.id, c])), ...(local.archive || []).map((c) => ['@archive', c])];
+    for (const [boxId, c] of order) {
+        const id = String(c.id); if (!placed.has(id) || (B.has(id) && !R.has(id))) continue;
+        const card = take(id) || JSON.parse(JSON.stringify(c)); Object.assign(card, c);
+        const target = boxId === '@archive' ? out.archive : (out.lists.find((l) => l.id === boxId) || out.lists[0] || {}).cards;
+        if (!target) continue;
+        const prev = L.get(id).prev; const pi = prev ? target.findIndex((x) => String(x.id) === prev) : -1;
+        target.splice(prev ? (pi > -1 ? pi + 1 : target.length) : 0, 0, card);
+    }
+    return out;
+}
+/* Swap in a merged or reloaded layout without losing the open card or a half-typed input. */
+function adoptLayout(layout, rev, base) {
+    const active = S.active && S.active.card;
+    S.board.title = layout.title; S.board.lists = layout.lists; S.board.archive = layout.archive || []; if (layout.version) S.board.version = layout.version;
+    layoutRev = rev; layoutBase = layoutSnapshot(base || layout);
+    if (active) { const at = locateCard(active.id); if (at) { if (active.description !== undefined) at.card.description = active.description; S.active.card = at.card; S.active.l = at.l; S.active.c = at.c; } }
+    saveLocal(); setTitle();
+    const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#board') && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+    if (!typing && !S.drag) renderBoard();
+    if (S.active && cwEl()) { cwUpdateHead(); cwRenderSide(); }
+}
 function persistLayout() {
     saveLocal(); lastSaveTime = Date.now();
-    const req = api('save_layout', S.board).then((r) => {
-        if (r && r.hash) { ownLayoutHashes.push(r.hash); if (ownLayoutHashes.length > 20) ownLayoutHashes.shift(); }
-        const b = S.boards.find((b) => b.id === S.boardId); if (b) b.name = S.board.title;
-        return r;
+    if (layoutSaving) { layoutAgain = true; return layoutSaving; }
+    const boardAtStart = S.boardId;
+    const run = (async () => {
+        for (let attempt = 0; attempt < 6; attempt++) {
+            if (S.boardId !== boardAtStart) return null;
+            const body = layoutSnapshot(S.board);
+            try {
+                const r = await api('save_layout', { ...body, baseRev: layoutRev });
+                layoutRev = r.rev; layoutBase = body;
+                if (r.hash) { ownLayoutHashes.push(r.hash); if (ownLayoutHashes.length > 20) ownLayoutHashes.shift(); }
+                const b = S.boards.find((x) => x.id === S.boardId); if (b) b.name = S.board.title;
+                return r;
+            } catch (e) {
+                if (e.status !== 409 || !e.data || !e.data.layout || S.boardId !== boardAtStart) throw e;
+                const remote = e.data.layout;
+                adoptLayout(mergeLayout(layoutBase, layoutSnapshot(S.board), remote), e.data.rev, remote);
+            }
+        }
+        toast('The board kept changing while saving. Reload to be safe.', 'err');
+        return null;
+    })();
+    layoutSaving = run; layoutSavesInFlight.push(run);
+    run.catch(() => {}).finally(() => {
+        layoutSaving = null; layoutSavesInFlight = layoutSavesInFlight.filter((x) => x !== run);
+        if (layoutAgain) { layoutAgain = false; persistLayout(); }
     });
-    layoutSavesInFlight.push(req);
-    req.catch(() => {}).finally(() => { layoutSavesInFlight = layoutSavesInFlight.filter((x) => x !== req); });
+    return run;
 }
 function persistCardDesc(card) { if (card && card.id) { saveLocal(); lastSaveTime = Date.now(); api('save_card', { id: card.id, description: card.description || '' }).catch(() => {}); } }
 function persistMeta(id, meta) { if (id) { lastSaveTime = Date.now(); api('save_card_meta', { id, meta }).catch(() => {}); } }
 async function loadData() {
     try {
         const data = await api('load');
-        if (data.lists) { S.board = data; if (!S.board.archive) S.board.archive = []; if (!S.board.users || Array.isArray(S.board.users)) S.board.users = {}; saveLocal(); setTitle(); return; }
+        if (data.lists) { S.board = data; if (!S.board.archive) S.board.archive = []; if (!S.board.users || Array.isArray(S.board.users)) S.board.users = {}; layoutRev = data.rev || 0; layoutBase = layoutSnapshot(data); saveLocal(); setTitle(); return; }
     } catch (e) {}
     S.board = lsGet(`beckon_${S.boardId}`, { title: S.boardId, lists: [{ id: 'l1', title: 'Start', cards: [] }], archive: [], users: {} });
     setTitle();
@@ -3381,7 +3482,7 @@ function connectSSE() {
         // Our own saves come back as events too. Wait for any save still in flight, then skip
         // the event only if the layout it reports is one this tab wrote.
         let hash = null; try { hash = JSON.parse(ev.data).hash || null; } catch (e) {}
-        if (layoutSavesInFlight.length) await Promise.allSettled(layoutSavesInFlight);
+        while (layoutSaving) await layoutSaving.catch(() => {});
         if (hash && ownLayoutHashes.includes(hash)) return;
         if (!hash && Date.now() - lastSaveTime < 2000) return;
         if (S.drag) return;
@@ -3725,8 +3826,8 @@ function bindBoard() {
         if (t.closest('[data-add-list]')) { addList(); return; }
         const lm = t.closest('[data-list-menu]'); if (lm) { stop(e); showListCtx(e.clientX, e.clientY, +lm.closest('.col').dataset.l); }
     });
-    board.addEventListener('focusout', () => { setTimeout(async () => { if (!S.pendingReload || S.active || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#board') && /INPUT|TEXTAREA/.test(document.activeElement.tagName))) return; S.pendingReload = false; await loadData(); renderBoard(); }, 250); });
-    board.addEventListener('contextmenu', (e) => { const card = e.target.closest('.card'); if (card) { e.preventDefault(); showCtx(e.clientX, e.clientY, +card.dataset.l, +card.dataset.c); } });
+    board.addEventListener('focusout', () => { setTimeout(async () => { if (!S.pendingReload || S.active || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#board') && /INPUT|TEXTAREA/.test(document.activeElement.tagName))) return; S.pendingReload = false; while (layoutSaving) await layoutSaving.catch(() => {}); await loadData(); renderBoard(); }, 250); });
+    board.addEventListener('contextmenu', (e) => { const card = e.target.closest('.card'); if (!card) return; e.preventDefault(); if (TD.el) return; showCtx(e.clientX, e.clientY, +card.dataset.l, +card.dataset.c); });
     board.addEventListener('keydown', (e) => {
         if (e.target.matches('[data-composer]')) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitComposer(); } if (e.key === 'Escape') { S.composer = null; renderBoard(); } }
         if (e.target.matches('[data-list-title]') && e.key === 'Enter') e.target.blur();
@@ -3734,10 +3835,7 @@ function bindBoard() {
     board.addEventListener('change', (e) => { if (e.target.matches('[data-list-title]')) { const l = +e.target.closest('.col').dataset.l; S.board.lists[l].title = e.target.value.trim() || 'Untitled'; e.target.value = S.board.lists[l].title; persistLayout(); } });
     board.addEventListener('mouseover', (e) => { const card = e.target.closest('.card'); if (card) { setHover(+card.dataset.l, +card.dataset.c, card); } });
     board.addEventListener('mouseout', (e) => { const card = e.target.closest('.card'); if (card && !card.contains(e.relatedTarget)) setHover(null, null, card); });
-    let pressTimer = null, pressEl = null;
-    board.addEventListener('touchstart', (e) => { const card = e.target.closest('.card'); if (!card) return; pressEl = card; const touch = e.touches[0]; pressTimer = setTimeout(() => { card.classList.remove('pressing'); showCtx(touch.clientX, touch.clientY, +card.dataset.l, +card.dataset.c); pressTimer = null; }, 500); card.classList.add('pressing'); }, { passive: true });
-    const endPress = () => { if (pressTimer) clearTimeout(pressTimer); pressTimer = null; if (pressEl) pressEl.classList.remove('pressing'); };
-    board.addEventListener('touchend', endPress); board.addEventListener('touchmove', endPress, { passive: true }); board.addEventListener('touchcancel', endPress);
+    bindTouchDrag(board);
     bindDnD(board);
 }
 function setHover(l, c, el) { $$('.card.hover').forEach((x) => x.classList.remove('hover')); if (l === null) { S.hover = null; return; } S.hover = { l, c, id: el.dataset.id }; el.classList.add('hover'); }
@@ -3797,6 +3895,87 @@ async function deleteCard(l, c) {
 
 /* ---------- Drag and drop ---------- */
 const dropLine = document.createElement('div'); dropLine.className = 'drop-line';
+/* Hit-test shared by mouse (dragover) and touch: works out S.dropTarget and places the drop line. */
+function dragOverAt(el, clientY) {
+    const col = el && el.closest && el.closest('.col'); if (!col || !S.drag) return false;
+    const l = +col.dataset.l;
+    if (S.drag.type === 'list') {
+        $$('.col.drop-before, .col.drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+        if (l === S.drag.l) { S.dropTarget = null; return true; }
+        col.classList.add(l < S.drag.l ? 'drop-before' : 'drop-after'); S.dropTarget = { type: 'list', l }; return true;
+    }
+    const body = $('[data-col-body]', col), cardEl = el.closest('.card');
+    if (cardEl && !cardEl.classList.contains('dragging')) {
+        const r = cardEl.getBoundingClientRect(); const before = clientY < r.top + r.height / 2;
+        body.insertBefore(dropLine, before ? cardEl : cardEl.nextSibling);
+        S.dropTarget = { type: 'card', l, c: +cardEl.dataset.c, pos: before ? 'top' : 'bottom' };
+    } else if (!cardEl) { body.appendChild(dropLine); S.dropTarget = { type: 'card', l, c: null, pos: 'bottom' }; }
+    return true;
+}
+
+/* Touch: hold a card (or a list's header) to pick it up, then drag. Holding without moving
+   opens the card menu, as before. A quick swipe still scrolls the board. */
+const TD = { el: null, handle: null, kind: null, timer: null, armed: false, dragging: false, sx: 0, sy: 0, x: 0, y: 0, ghost: null, ox: 0, oy: 0, raf: 0 };
+function bindTouchDrag(board) {
+    const wrap = document.getElementById('board-wrap');
+    const reset = () => {
+        clearTimeout(TD.timer); cancelAnimationFrame(TD.raf);
+        if (TD.el) TD.el.classList.remove('pressing', 'lifted', 'dragging');
+        if (TD.handle) TD.handle.setAttribute('draggable', 'true');
+        if (TD.ghost) TD.ghost.remove();
+        wrap.classList.remove('touch-dragging');
+        Object.assign(TD, { el: null, handle: null, kind: null, timer: null, armed: false, dragging: false, ghost: null });
+    };
+    const hitTest = () => { dragOverAt(document.elementFromPoint(TD.x, TD.y), TD.y); };
+    const autoScroll = () => {
+        if (!TD.dragging) return;
+        const wr = wrap.getBoundingClientRect(); let moved = false;
+        if (TD.x < wr.left + 36) { wrap.scrollLeft -= 14; moved = true; } else if (TD.x > wr.right - 36) { wrap.scrollLeft += 14; moved = true; }
+        const under = document.elementFromPoint(TD.x, TD.y); const body = under && under.closest && under.closest('[data-col-body]');
+        if (body) { const br = body.getBoundingClientRect(); if (TD.y < br.top + 36) { body.scrollTop -= 12; moved = true; } else if (TD.y > br.bottom - 36) { body.scrollTop += 12; moved = true; } }
+        if (moved) hitTest();
+        TD.raf = requestAnimationFrame(autoScroll);
+    };
+    const startDrag = () => {
+        TD.dragging = true; wrap.classList.add('touch-dragging');
+        if (TD.kind === 'card') S.drag = { type: 'card', l: +TD.el.dataset.l, c: +TD.el.dataset.c };
+        else S.drag = { type: 'list', l: +TD.el.dataset.l };
+        const src = TD.kind === 'card' ? TD.el : TD.handle; const r = src.getBoundingClientRect();
+        TD.ghost = src.cloneNode(true); TD.ghost.classList.remove('pressing', 'lifted', 'hover'); TD.ghost.classList.add('touch-ghost');
+        if (TD.kind === 'list') { TD.ghost.style.background = 'var(--surface-2)'; TD.ghost.style.borderRadius = 'var(--r-lg)'; TD.ghost.style.border = '1px solid var(--line)'; }
+        TD.ghost.style.width = r.width + 'px'; TD.ox = TD.sx - r.left; TD.oy = TD.sy - r.top;
+        document.body.appendChild(TD.ghost);
+        TD.el.classList.remove('lifted'); TD.el.classList.add('dragging');
+        TD.raf = requestAnimationFrame(autoScroll);
+    };
+    board.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1 || TD.el) return;
+        const card = e.target.closest('.card'); const head = !card && e.target.closest('.col-head');
+        if (!card && !head) return;
+        if (head && e.target.closest('input, button')) return;
+        const t = e.touches[0];
+        Object.assign(TD, { el: card || head.closest('.col'), handle: card || head, kind: card ? 'card' : 'list', sx: t.clientX, sy: t.clientY, x: t.clientX, y: t.clientY, armed: false, dragging: false });
+        TD.handle.setAttribute('draggable', 'false'); // keep the browser's own drag out of this
+        if (card) card.classList.add('pressing');
+        TD.timer = setTimeout(() => { if (!TD.el) return; TD.armed = true; TD.el.classList.remove('pressing'); TD.el.classList.add('lifted'); if (navigator.vibrate) navigator.vibrate(10); }, 350);
+    }, { passive: true });
+    board.addEventListener('touchmove', (e) => {
+        if (!TD.el) return;
+        const t = e.touches[0]; TD.x = t.clientX; TD.y = t.clientY;
+        const moved = Math.hypot(TD.x - TD.sx, TD.y - TD.sy) > 8;
+        if (!TD.armed) { if (moved) reset(); return; } // it was a scroll
+        e.preventDefault();
+        if (!TD.dragging && moved) startDrag();
+        if (TD.dragging) { TD.ghost.style.left = (TD.x - TD.ox) + 'px'; TD.ghost.style.top = (TD.y - TD.oy) + 'px'; hitTest(); }
+    }, { passive: false });
+    board.addEventListener('touchend', (e) => {
+        if (!TD.el) return;
+        if (TD.dragging) { e.preventDefault(); const had = S.dropTarget; if (had) onDrop(); else { S.drag = null; dropLine.remove(); $$('.col.drop-before, .col.drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after')); renderBoard(); } }
+        else if (TD.armed) { e.preventDefault(); if (TD.kind === 'card') showCtx(TD.x, TD.y, +TD.el.dataset.l, +TD.el.dataset.c); }
+        reset();
+    });
+    board.addEventListener('touchcancel', () => { if (TD.dragging) { S.drag = null; S.dropTarget = null; dropLine.remove(); renderBoard(); } reset(); });
+}
 function bindDnD(board) {
     board.addEventListener('dragstart', (e) => {
         const card = e.target.closest('.card'), head = e.target.closest('.col-head');
@@ -3807,21 +3986,9 @@ function bindDnD(board) {
         }
     });
     board.addEventListener('dragover', (e) => {
-        if (!S.drag) return;
-        const col = e.target.closest('.col'); if (!col) return;
+        if (!S.drag || !e.target.closest('.col')) return;
         e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-        const l = +col.dataset.l;
-        if (S.drag.type === 'list') {
-            $$('.col.drop-before, .col.drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
-            if (l === S.drag.l) { S.dropTarget = null; return; }
-            col.classList.add(l < S.drag.l ? 'drop-before' : 'drop-after'); S.dropTarget = { type: 'list', l }; return;
-        }
-        const body = $('[data-col-body]', col), cardEl = e.target.closest('.card');
-        if (cardEl && !cardEl.classList.contains('dragging')) {
-            const r = cardEl.getBoundingClientRect(); const before = e.clientY < r.top + r.height / 2;
-            body.insertBefore(dropLine, before ? cardEl : cardEl.nextSibling);
-            S.dropTarget = { type: 'card', l, c: +cardEl.dataset.c, pos: before ? 'top' : 'bottom' };
-        } else if (!cardEl) { body.appendChild(dropLine); S.dropTarget = { type: 'card', l, c: null, pos: 'bottom' }; }
+        dragOverAt(e.target, e.clientY);
     });
     board.addEventListener('drop', (e) => { e.preventDefault(); onDrop(); });
     board.addEventListener('dragend', () => { S.drag = null; S.dropTarget = null; dropLine.remove(); renderBoard(); });
