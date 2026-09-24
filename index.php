@@ -2555,7 +2555,7 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
 .avatar.lg { width: 40px; height: 40px; font-size: 14px; }
 .avatar.xl { width: 88px; height: 88px; font-size: 28px; }
-.avatar.xs { width: 22px; height: 22px; font-size: 9px; }
+.avatar.xs { width: 22px; height: 22px; font-size: 8.5px; letter-spacing: 0; }
 .avatar[data-color] { color: #fff; }
 .bg-red { background: var(--c-red) !important; } .bg-orange { background: var(--c-orange) !important; } .bg-yellow { background: var(--c-yellow) !important; }
 .bg-lime { background: var(--c-lime) !important; } .bg-green { background: var(--c-green) !important; } .bg-teal { background: var(--c-teal) !important; }
@@ -2671,7 +2671,7 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .chip-date.overdue { background: var(--danger-soft); color: var(--danger); }
 .chip-date.soon { background: var(--warn-soft); color: var(--warn); }
 .assignees { display: flex; }
-.assignees .avatar { margin-left: -6px; box-shadow: 0 0 0 2px var(--surface); }
+.assignees .avatar { margin-left: -3px; box-shadow: 0 0 0 2px var(--surface); }
 .assignees .avatar:first-child { margin-left: 0; }
 .card-more { position: absolute; top: 6px; right: 6px; display: none; }
 .mini-progress { width: 36px; height: 4px; background: var(--surface-3); border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; }
@@ -2690,7 +2690,9 @@ input[type="date"].field::-webkit-calendar-picker-indicator { opacity: .6; curso
 .win-body { padding: 18px; overflow-y: auto; }
 .win-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px 16px; }
 .form-row { margin-bottom: 14px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-2 .field { min-width: 0; width: 100%; }
+.grid-2 input[type="date"].field { padding-left: 8px; padding-right: 6px; font-size: 13px; }
 .danger-zone { border: 1px solid var(--danger-soft); background: color-mix(in srgb, var(--danger-soft) 40%, transparent); border-radius: var(--r); padding: 12px 14px; }
 .danger-zone h4 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--danger); display: flex; align-items: center; gap: 6px; }
 .danger-zone p { margin: 0 0 10px; font-size: 12.5px; color: var(--text-2); }
