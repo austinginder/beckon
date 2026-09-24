@@ -33,6 +33,8 @@ The rebuild release. Beckon 2.0 drops every third-party library and ships an int
 * **The updater re-reads the release from GitHub before installing** instead of trusting its cache.
 
 ### 🐛 Fixes
+* **Two tabs on one board no longer overwrite each other:** every board now carries a revision number. When a tab saves on top of changes it has not seen (another tab, the CLI, a card moved in from another board), Beckon merges both sides and saves again: cards added, moved, edited, archived or deleted in either place all survive. Rapid edits are batched into fewer saves.
+* **Touch reordering:** on phones and tablets, hold a card to pick it up and drag it within a list or to another one, with the board scrolling at the edges. Hold a list's header to move the list. Holding without moving still opens the card menu, and swipes still scroll.
 * **Changes made elsewhere no longer get wiped:** a card added from another tab or the CLI while you had a card open is kept, and your own saves no longer hide other people's updates for two seconds.
 * **Deletes and archives always hit the card you picked,** even if the board reloads while the confirm dialog is open.
 * **Enter on a dialog's Cancel button cancels.**
