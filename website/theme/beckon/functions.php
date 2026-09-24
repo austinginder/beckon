@@ -7,7 +7,7 @@
  * "what's new" popup on the front page read from beckon_changelog_releases().
  */
 
-define('BECKON_SITE_VERSION', '2.0.0');
+define('BECKON_SITE_VERSION', '2.0.1');
 define('BECKON_CHANGELOG_URL', 'https://raw.githubusercontent.com/austinginder/beckon/refs/heads/main/changelog.md');
 
 add_action('after_setup_theme', function () {

@@ -124,7 +124,7 @@ get_header(); ?>
 <span class="p">$</span> php -S localhost:8000</pre>
             </div>
             <div class="install-cols">
-                <div class="note"><b>Running Cove?</b><code>cove add beckon --plain</code>, then clone the repo into the site folder and open <code>https://beckon.localhost</code>.</div>
+                <div class="note"><b><a href="https://cove.run">Running Cove?</a></b><code>cove add beckon --plain</code>, then clone the repo into the site folder and open <code>https://beckon.localhost</code>.</div>
                 <div class="note"><b>Keep it private.</b> Beckon has no login of its own. Put it behind HTTP basic auth, a VPN, or a host you control. Search needs the SQLite PDO extension, which most PHP builds include.</div>
             </div>
             <div class="tree" style="max-width:780px;margin:24px auto 0">boards/

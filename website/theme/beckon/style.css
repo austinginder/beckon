@@ -4,7 +4,7 @@ Theme URI: https://beckon.run
 Author: Austin Ginder
 Author URI: https://austinginder.com
 Description: The beckon.run marketing site. Framework-free, light and dark, with live mockups and a changelog rendered from the repository's changelog.md.
-Version: 2.0.0
+Version: 2.0.1
 License: MIT
 Text Domain: beckon
 */
@@ -220,6 +220,8 @@ Text Domain: beckon
         .install-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 780px; margin: 24px auto 0; }
         .note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 14.5px; color: var(--muted); }
         .note b { color: var(--text); display: block; margin-bottom: 4px; }
+        .note b a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; transition: color .15s, text-decoration-color .15s; }
+        .note b a:hover { color: var(--accent-ink); text-decoration-color: currentColor; }
         .tree { font-family: var(--mono); font-size: 13px; line-height: 1.75; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 18px 22px; white-space: pre; overflow-x: auto; }
         .tree span { color: var(--muted); }
 
