@@ -8,7 +8,7 @@ use Exception;
 use RecursiveIteratorIterator;
 use RecursiveDirectoryIterator;
 
-define('BECKON_VERSION', '1.0.0');
+define('BECKON_VERSION', '2.0.0');
 
 class App {
     private $baseDir;

@@ -14,7 +14,7 @@ namespace BeckonCLI;
 // CONFIGURATION
 // ============================================
 
-define('CLI_VERSION', '1.0.0');
+define('CLI_VERSION', '2.0.0');
 define('BOARDS_DIR', __DIR__ . '/boards');
 define('VALID_COLORS', ['orange', 'green', 'red', 'yellow', 'purple', 'blue', 'sky', 'lime', 'pink', 'black', 'slate']);
 

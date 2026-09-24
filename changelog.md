@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-09-24
 
 The rebuild release. Beckon 2.0 drops every third-party library and ships an interface written for it alone, adds search across boards, live reload, WordPress publishing and a command line, and stays one file.
 
