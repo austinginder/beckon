@@ -578,7 +578,7 @@ class App {
         // We look for <img> tags that now have 'data-wp-id'. 
         // We assume they are wrapped in <p> by markdown-it.
         $html = preg_replace_callback(
-            '/<p>\s*(<img\s+[^>]*data-wp-id="\d+"[^>]*>)\s*<\/p>/i',
+            '/<p[^>]*>\s*(<img\s+[^>]*data-wp-id="\d+"[^>]*>)\s*<\/p>/i',
             function($m) {
                 preg_match('/data-wp-id="(\d+)"/i', $m[1], $idm);
                 preg_match('/src="([^"]+)"/i', $m[1], $srcm);
@@ -4776,6 +4776,7 @@ async function publishToWp(el, target) {
         const upload = async (p) => { if (uploaded[p]) return uploaded[p]; set(`Uploading ${p.split('/').pop()}…`, done / total * 100); const r = await api('wp_upload', { wp_url: site.url, wp_user: site.user, wp_pass: site.pass, local_path: p }); uploaded[p] = { id: r.id, url: r.url }; done++; return uploaded[p]; };
         for (const img of imgs) { const p = new URL(img.getAttribute('src'), location.origin).pathname.replace(/^\//, ''); const d = await upload(p); img.setAttribute('src', d.url); img.setAttribute('data-wp-id', d.id); }
         let featured = null; if (cover && cover.startsWith('boards/')) featured = (await upload(cover)).id;
+        doc.querySelectorAll('[data-line]').forEach((n) => n.removeAttribute('data-line')); // editor source map, not content
         set('Creating draft…', 90);
         const res = await api('wp_post', { wp_url: site.url, wp_user: site.user, wp_pass: site.pass, title: target.card.title, html: doc.body.innerHTML, featured_media: featured });
         set('Done', 100); toast('Draft created on WordPress');
@@ -4791,6 +4792,10 @@ function handleImportFile(file) {
     r.onload = (ev) => {
         let j; try { j = JSON.parse(ev.target.result); } catch (e) { toast('That file is not valid JSON', 'err'); return; }
         if (!j || !Array.isArray(j.cards) || !Array.isArray(j.lists)) { toast('This does not look like a Trello board export', 'err'); return; }
+        // Trello stores dates as UTC timestamps; the board shows calendar days. Convert in this
+        // browser's timezone so an evening deadline doesn't land on the next day.
+        const localDay = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` : iso; };
+        j.cards.forEach((c) => { if (c.due) c.due = localDay(c.due); if (c.start) c.start = localDay(c.start); });
         const atts = []; j.cards.forEach((c) => (c.attachments || []).forEach((a) => { if (a.url) atts.push({ cardId: c.id, url: a.url, name: a.name, id: a.id }); }));
         openImportModal({ json: j, attachments: atts });
     };
