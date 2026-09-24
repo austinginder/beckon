@@ -155,7 +155,9 @@ class App {
         echo "event: connected\ndata: {\"mtime\":{$lastMtime},\"hash\":\"$lastHash\"}\n\n";
         flush();
 
-        $maxRuntime = 300; // 5 minutes max, then client reconnects
+        // Short streams: each one holds a PHP worker, so hand it back often. The browser reconnects
+        // right away and compares the layout hash from 'connected', so nothing is missed between.
+        $maxRuntime = 30;
         $start = time();
 
         while (time() - $start < $maxRuntime) {
@@ -1362,77 +1364,112 @@ class App {
     }
 
     protected function actionSaveCardMeta($input, $boardId, $boardDir) {
-        $this->cardId($input['id'] ?? '');
+        $id = $this->cardId($input['id'] ?? '');
         if (!is_dir($boardDir)) throw new Exception("Board not found");
-        $meta = $input['meta'];
+        $meta = is_array($input['meta'] ?? null) ? $input['meta'] : [];
 
         if (isset($input['title'])) $meta['title'] = $input['title'];
         if (isset($input['labels'])) $meta['labels'] = $input['labels'];
-        
-        $this->atomicWrite("$boardDir/{$input['id']}.json", $meta);
-        
+
+        $this->withBoardLock($boardId, function () use ($boardDir, $id, &$meta) {
+            $path = "$boardDir/$id.json";
+            $cur = is_file($path) ? (json_decode(file_get_contents($path), true) ?? []) : null;
+            if (is_array($cur)) {
+                // Comments change only through the comment endpoints, so another tab's comment
+                // can't be dropped by this tab saving its (older) copy of the card.
+                if (array_key_exists('comments', $cur)) $meta['comments'] = $cur['comments'];
+                // Activity and revisions are logs: keep entries from both copies.
+                $meta['activity'] = $this->mergeLog($cur['activity'] ?? [], $meta['activity'] ?? [], fn($e) => ($e['date'] ?? '') . '|' . ($e['text'] ?? ''));
+                $meta['revisions'] = array_slice($this->mergeLog($cur['revisions'] ?? [], $meta['revisions'] ?? [], fn($e) => $e['id'] ?? (($e['date'] ?? '') . '|' . md5($e['text'] ?? ''))), 0, 50);
+            }
+            $this->atomicWrite($path, $meta);
+        });
+
         // Update search index
-        $this->reindexCard($boardId, $boardDir, $input['id']);
-        
-        return ['status' => 'saved'];
+        $this->reindexCard($boardId, $boardDir, $id);
+
+        return ['status' => 'saved', 'comments' => $meta['comments'] ?? []];
+    }
+
+    /** Union of two logs by key, newest first. */
+    private function mergeLog(array $a, array $b, callable $key) {
+        $all = [];
+        foreach (array_merge($a, $b) as $e) { if (is_array($e)) $all[$key($e)] = $e; }
+        $all = array_values($all);
+        usort($all, fn($x, $y) => strcmp((string) ($y['date'] ?? ''), (string) ($x['date'] ?? '')));
+        return $all;
+    }
+
+    /** Read-modify-write of a card's comments under the board lock. */
+    private function withComments($boardId, $boardDir, $cardId, callable $fn) {
+        $cardId = $this->cardId($cardId);
+        if (!is_dir($boardDir)) throw new Exception("Board not found");
+        return $this->withBoardLock($boardId, function () use ($boardDir, $cardId, $fn, $boardId) {
+            $path = "$boardDir/$cardId.json";
+            $meta = is_file($path) ? (json_decode(file_get_contents($path), true) ?? []) : [];
+            $meta['comments'] = $fn($meta['comments'] ?? []);
+            $this->atomicWrite($path, $meta);
+            $this->reindexCard($boardId, $boardDir, $cardId);
+            return ['status' => 'saved', 'comments' => $meta['comments']];
+        });
+    }
+
+    protected function actionCommentAdd($input, $boardId, $boardDir) {
+        $c = $input['comment'] ?? null;
+        if (!is_array($c) || trim((string) ($c['text'] ?? '')) === '') throw new Exception("Empty comment");
+        $comment = [
+            'id' => preg_match('/^[A-Za-z0-9_-]{1,80}$/', (string) ($c['id'] ?? '')) ? $c['id'] : date('Y-m-d') . '_' . bin2hex(random_bytes(8)),
+            'text' => (string) $c['text'],
+            'date' => $c['date'] ?? date('c'),
+            'user_id' => $c['user_id'] ?? null,
+            'user' => is_array($c['user'] ?? null) ? $c['user'] : null,
+            'reactions' => [],
+        ];
+        return $this->withComments($boardId, $boardDir, $input['id'] ?? '', function ($comments) use ($comment) {
+            foreach ($comments as $x) if (($x['id'] ?? null) === $comment['id']) return $comments;
+            array_unshift($comments, $comment);
+            return $comments;
+        });
+    }
+
+    protected function actionCommentEdit($input, $boardId, $boardDir) {
+        $cid = $input['comment_id'] ?? ''; $text = (string) ($input['text'] ?? '');
+        return $this->withComments($boardId, $boardDir, $input['id'] ?? '', function ($comments) use ($cid, $text) {
+            foreach ($comments as &$x) if (($x['id'] ?? null) === $cid) { $x['text'] = $text; $x['editedDate'] = date('c'); }
+            return $comments;
+        });
+    }
+
+    protected function actionCommentDelete($input, $boardId, $boardDir) {
+        $cid = $input['comment_id'] ?? '';
+        return $this->withComments($boardId, $boardDir, $input['id'] ?? '', fn($comments) => array_values(array_filter($comments, fn($x) => ($x['id'] ?? null) !== $cid)));
     }
 
     protected function actionToggleReaction($input, $boardId, $boardDir) {
-        $cardId = $input['card_id'] ?? null;
         $commentId = $input['comment_id'] ?? null;
         $emoji = $input['emoji'] ?? null;
         $userId = $input['user_id'] ?? null;
-
-        if (!$cardId || !$commentId || !$emoji || !$userId) throw new Exception("Missing parameters");
-        $cardId = $this->cardId($cardId);
-
-        // Load meta
-        $metaPath = "$boardDir/$cardId.json";
-        $meta = json_decode(@file_get_contents($metaPath), true) ?? [];
-        $meta['comments'] = $meta['comments'] ?? [];
-
+        if (empty($input['card_id']) || !$commentId || !$emoji || !$userId) throw new Exception("Missing parameters");
         $found = false;
-        foreach ($meta['comments'] as &$comment) {
-            if ($comment['id'] === $commentId) {
-                $comment['reactions'] = $comment['reactions'] ?? [];
-                
-                $reactionFound = false;
-                foreach ($comment['reactions'] as $key => &$reaction) {
-                    if ($reaction['emoji'] === $emoji) {
-                        $reactionFound = true;
-                        // Toggle User
-                        $userIndex = array_search($userId, $reaction['users']);
-                        if ($userIndex !== false) {
-                            // Remove user
-                            array_splice($reaction['users'], $userIndex, 1);
-                            // If empty, remove reaction entirely
-                            if (count($reaction['users']) === 0) {
-                                array_splice($comment['reactions'], $key, 1);
-                            }
-                        } else {
-                            // Add user
-                            $reaction['users'][] = $userId;
-                        }
-                        break;
-                    }
-                }
-
-                if (!$reactionFound) {
-                    // Create new reaction
-                    $comment['reactions'][] = ['emoji' => $emoji, 'users' => [$userId]];
-                }
-                
+        $r = $this->withComments($boardId, $boardDir, $input['card_id'], function ($comments) use ($commentId, $emoji, $userId, &$found) {
+            foreach ($comments as &$comment) {
+                if (($comment['id'] ?? null) !== $commentId) continue;
                 $found = true;
-                break;
+                $reactions = $comment['reactions'] ?? [];
+                $i = array_search($emoji, array_column($reactions, 'emoji'), true);
+                if ($i === false) { $reactions[] = ['emoji' => $emoji, 'users' => [$userId]]; }
+                else {
+                    $users = $reactions[$i]['users'] ?? [];
+                    $u = array_search($userId, $users, true);
+                    if ($u === false) $users[] = $userId; else array_splice($users, $u, 1);
+                    if ($users) $reactions[$i]['users'] = array_values($users); else array_splice($reactions, $i, 1);
+                }
+                $comment['reactions'] = array_values($reactions);
             }
-        }
-
-        if ($found) {
-            $this->atomicWrite($metaPath, $meta);
-            return ['status' => 'saved', 'comments' => $meta['comments']];
-        }
-        
-        throw new Exception("Comment not found");
+            return $comments;
+        });
+        if (!$found) throw new Exception("Comment not found");
+        return $r;
     }
 
     protected function actionGetBoardLists($input) {
@@ -3478,10 +3515,30 @@ function connectSSE() {
     if (eventSource) { eventSource.close(); eventSource = null; }
     if (!S.boardId || !window.EventSource || sseUnavailable) return;
     eventSource = new EventSource(`?action=events&board=${encodeURIComponent(S.boardId)}`);
-    eventSource.addEventListener('board_updated', async (ev) => {
+    const boardForStream = S.boardId;
+    // Streams are short and reconnect constantly; if the board changed in the gap, the
+    // 'connected' hash differs from the last one this tab knew about.
+    eventSource.addEventListener('connected', (ev) => {
+        let hash = null; try { hash = JSON.parse(ev.data).hash || null; } catch (e) {}
+        if (!hash || S.boardId !== boardForStream) return;
+        const known = lastStreamHash[boardForStream]; lastStreamHash[boardForStream] = hash;
+        if (known && known !== hash) onBoardUpdated(hash);
+    });
+    eventSource.addEventListener('board_updated', (ev) => {
+        let hash = null; try { hash = JSON.parse(ev.data).hash || null; } catch (e) {}
+        if (hash) lastStreamHash[boardForStream] = hash;
+        onBoardUpdated(hash);
+    });
+    eventSource.addEventListener('timeout', () => { eventSource.close(); connectSSE(); });
+    // The server has no worker to spare for a stream (PHP's built-in server
+    // with one worker): stop asking, or the retry would stall the board.
+    eventSource.addEventListener('unavailable', () => { sseUnavailable = true; eventSource.close(); eventSource = null; });
+    eventSource.onerror = () => { eventSource.close(); setTimeout(connectSSE, 5000); };
+}
+const lastStreamHash = {};
+async function onBoardUpdated(hash) {
         // Our own saves come back as events too. Wait for any save still in flight, then skip
         // the event only if the layout it reports is one this tab wrote.
-        let hash = null; try { hash = JSON.parse(ev.data).hash || null; } catch (e) {}
         while (layoutSaving) await layoutSaving.catch(() => {});
         if (hash && ownLayoutHashes.includes(hash)) return;
         if (!hash && Date.now() - lastSaveTime < 2000) return;
@@ -3500,12 +3557,12 @@ function connectSSE() {
         Object.assign(at.card, mine);
         S.active.card = at.card; S.active.l = at.l; S.active.c = at.c;
         renderBoard(); cwUpdateHead(); cwRenderSide();
-    });
-    eventSource.addEventListener('timeout', () => { eventSource.close(); connectSSE(); });
-    // The server has no worker to spare for a stream (PHP's built-in server
-    // with one worker): stop asking, or the retry would stall the board.
-    eventSource.addEventListener('unavailable', () => { sseUnavailable = true; eventSource.close(); eventSource = null; });
-    eventSource.onerror = () => { eventSource.close(); setTimeout(connectSSE, 5000); };
+        // Comments from other tabs arrive with a board change (their comment count moved).
+        if (!S.active.loading) api('get_card', { id: mine.id }).then((r) => {
+            if (!S.active || String(S.active.card.id) !== String(mine.id) || S.ui.editingComment) return;
+            const fresh = (r.meta && r.meta.comments) || [];
+            if (canon(fresh) !== canon(S.active.meta.comments)) { S.active.meta.comments = fresh; S.active.card.commentCount = fresh.length; cwRenderActivity(); }
+        }).catch(() => {});
 }
 
 /* ---------- Users ---------- */
@@ -4436,8 +4493,8 @@ function cwRenderActivity() {
     if (inp) { acAttach(inp); inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !acOpen()) addComment(inp.value); }); $('[data-comment-send]', actRoot).addEventListener('click', () => addComment(inp.value)); }
     on(actRoot, 'click', '[data-comment-edit]', (e, t) => { S.ui.editingComment = t.dataset.commentEdit; cwRenderActivity(); const ta = $('[data-edit-text]', $('#cw-activity', el)); if (ta) ta.focus(); });
     on(actRoot, 'click', '[data-comment-cancel]', () => { S.ui.editingComment = null; cwRenderActivity(); });
-    on(actRoot, 'click', '[data-comment-save]', (e, t) => { const c = m.comments.find((x) => x.id === t.dataset.commentSave); const ta = $('[data-edit-text]', actRoot); if (c && ta) { c.text = ta.value; c.editedDate = new Date().toISOString(); persistMeta(a.card.id, m); } S.ui.editingComment = null; cwRenderActivity(); });
-    on(actRoot, 'click', '[data-comment-del]', async (e, t) => { if (!await dialog.confirm({ title: 'Delete this comment?', ok: 'Delete', danger: true })) return; m.comments = m.comments.filter((x) => x.id !== t.dataset.commentDel); a.card.commentCount = Math.max(0, (a.card.commentCount || 1) - 1); persistMeta(a.card.id, m); persistLayout(); cwRenderActivity(); });
+    on(actRoot, 'click', '[data-comment-save]', (e, t) => { const c = m.comments.find((x) => x.id === t.dataset.commentSave); const ta = $('[data-edit-text]', actRoot); if (c && ta && cardReady()) { c.text = ta.value; c.editedDate = new Date().toISOString(); commentCall('comment_edit', { comment_id: c.id, text: c.text }); } S.ui.editingComment = null; cwRenderActivity(); });
+    on(actRoot, 'click', '[data-comment-del]', async (e, t) => { if (!await dialog.confirm({ title: 'Delete this comment?', ok: 'Delete', danger: true })) return; if (!cardReady()) return; m.comments = m.comments.filter((x) => x.id !== t.dataset.commentDel); a.card.commentCount = Math.max(0, (a.card.commentCount || 1) - 1); cwRenderActivity(); renderBoard(); commentCall('comment_delete', { comment_id: t.dataset.commentDel }); });
     on(actRoot, 'click', '[data-react]', (e, t) => toggleReaction(t.dataset.react, t.dataset.emoji));
     on(actRoot, 'click', '[data-react-add]', (e, t) => { e.stopPropagation(); openReactionPicker(t.dataset.reactAdd, t); });
     const slider = $('[data-rev-slider]', actRoot);
@@ -4469,11 +4526,23 @@ function commentHtml(c) {
         </div></div></div>`;
 }
 function cardReady() { const a = S.active; if (a && a.loading) { toast(a.failed ? 'This card did not load, so changes are off. Close and reopen it.' : 'Still loading this card…', 'info'); return false; } return !!a; }
+/* Comments are written one at a time on the server, so two tabs commenting on one card both keep theirs. */
+function commentCall(action, payload) {
+    const a = S.active; if (!a) return;
+    const card = a.card;
+    api(action, { id: card.id, ...payload }).then((r) => {
+        if (!r || !Array.isArray(r.comments)) return;
+        if (S.active && S.active.card.id === card.id) { S.active.meta.comments = r.comments; cwRenderActivity(); }
+        card.commentCount = r.comments.length; persistLayout(); renderBoard();
+    }).catch((e) => toast('Comment not saved: ' + e.message, 'err'));
+}
 function addComment(text) {
     const a = S.active; text = (text || '').trim(); if (!a || !text || !cardReady()) return;
-    a.meta.comments.unshift({ id: uid(), text, date: new Date().toISOString(), user_id: S.user.id || null, user: { name: S.user.name, initials: S.user.initials }, reactions: [] });
+    const comment = { id: uid(), text, date: new Date().toISOString(), user_id: S.user.id || null, user: { name: S.user.name, initials: S.user.initials }, reactions: [] };
+    a.meta.comments.unshift(comment);
     a.card.commentCount = (a.card.commentCount || 0) + 1;
-    persistMeta(a.card.id, a.meta); persistLayout(); cwRenderActivity();
+    cwRenderActivity(); renderBoard();
+    commentCall('comment_add', { comment });
 }
 async function toggleReaction(commentId, emoji) {
     const a = S.active; if (!a) return;
