@@ -15,7 +15,7 @@ get_header(); ?>
                     <a class="btn brand" href="https://github.com/austinginder/beckon/releases/latest/download/index.php"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M4 16.5v2A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5v-2"/></svg> Download index.php</a>
                     <a class="btn" href="https://github.com/austinginder/beckon"><svg class="i" viewBox="0 0 24 24"><path d="M8.5 8L4 12l4.5 4M15.5 8l4.5 4-4.5 4M13.5 5.5l-3 13"/></svg> View source</a>
                 </div>
-                <p class="fine">MIT licensed · one file · around 270 KB · PHP 8</p>
+                <p class="fine">MIT licensed · one file · around 300 KB · PHP 8</p>
             </div>
 
             <!-- Live board mock -->
