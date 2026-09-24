@@ -24,9 +24,29 @@ class App {
             mkdir($this->boardsDir, 0755, true);
         }
         
+        // Apache only: never execute or serve scripts, databases or logs from inside boards/.
+        $ht = $this->boardsDir . '/.htaccess';
+        if (!file_exists($ht)) @file_put_contents($ht, "# Written by Beckon. Uploads are data, never code.\n<FilesMatch \"\\.(php[0-9]?|phtml|phar|pht|phps|cgi|pl|py|sh|htaccess|db|log)$\">\n    Require all denied\n</FilesMatch>\nRedirectMatch 404 /\\.(sync|updates)/\n");
+
         // Initialize search index
         $this->searchIndex = new SearchIndex($this->boardsDir);
     }
+
+    /** Extensions an upload may keep. Anything a web server could execute or render as a page is missing on purpose. */
+    const UPLOAD_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic', 'bmp', 'ico', 'pdf', 'txt', 'md', 'csv', 'json', 'log', 'rtf', 'zip', 'gz', 'tar', '7z', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'key', 'numbers', 'pages', 'mp3', 'm4a', 'wav', 'ogg', 'mp4', 'mov', 'webm', 'psd', 'ai', 'sketch', 'fig', 'eps'];
+    const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic', 'bmp', 'ico'];
+
+    /** Returns the lowercased extension if allowed, else throws. */
+    private function allowedExt($ext, array $allowed = self::UPLOAD_EXTS) {
+        $ext = strtolower(trim((string) $ext));
+        if ($ext === 'log') $ext = 'txt';
+        if ($ext === '' || !in_array($ext, $allowed, true)) throw new Exception("Files of type ." . ($ext ?: '?') . " can't be uploaded.");
+        return $ext;
+    }
+
+    /** Card ids are file names inside the board folder: dates, uuids, Trello hex ids, old numeric ids. */
+    private function isCardId($id) { return is_scalar($id) && preg_match('/^[A-Za-z0-9_-]{1,128}$/', (string) $id); }
+    private function cardId($id) { if (!$this->isCardId($id)) throw new Exception("Invalid card id"); return (string) $id; }
 
     public function run() {
         // Only intercept if this is an API request
@@ -43,6 +63,18 @@ class App {
         }
 
         header('Content-Type: application/json');
+
+        // Beckon has no login on purpose, but other web pages must not drive it through the
+        // visitor's browser. Browsers label cross-site requests; curl, the CLI and the sync app
+        // send neither header and are unaffected.
+        $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '';
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        $originHost = $origin ? (parse_url($origin, PHP_URL_HOST) . (parse_url($origin, PHP_URL_PORT) ? ':' . parse_url($origin, PHP_URL_PORT) : '')) : '';
+        if ($site === 'cross-site' || ($origin && $origin !== 'null' && strcasecmp($originHost, $_SERVER['HTTP_HOST'] ?? '') !== 0) || $origin === 'null') {
+            http_response_code(403);
+            echo json_encode(['error' => 'Cross-site requests are not allowed.']);
+            exit;
+        }
 
         try {
             // parse JSON input
@@ -105,9 +137,10 @@ class App {
         }
 
         $lastMtime = filemtime($layoutPath);
+        $lastHash = md5_file($layoutPath);
 
         // Send initial connection event
-        echo "event: connected\ndata: {\"mtime\":{$lastMtime}}\n\n";
+        echo "event: connected\ndata: {\"mtime\":{$lastMtime},\"hash\":\"$lastHash\"}\n\n";
         flush();
 
         $maxRuntime = 300; // 5 minutes max, then client reconnects
@@ -118,10 +151,13 @@ class App {
 
             clearstatcache(true, $layoutPath);
             $currentMtime = filemtime($layoutPath);
+            // mtime has one-second resolution, so two writes in the same second compare content too.
+            $currentHash = @md5_file($layoutPath) ?: $lastHash;
 
-            if ($currentMtime !== $lastMtime) {
+            if ($currentMtime !== $lastMtime || $currentHash !== $lastHash) {
                 $lastMtime = $currentMtime;
-                echo "event: board_updated\ndata: {\"mtime\":{$currentMtime}}\n\n";
+                $lastHash = $currentHash;
+                echo "event: board_updated\ndata: {\"mtime\":{$currentMtime},\"hash\":\"$currentHash\"}\n\n";
                 flush();
             } elseif ((time() - $start) % 15 === 0) {
                 // A comment line is invisible to the client but is a write, and a
@@ -380,7 +416,7 @@ class App {
         $dir = "$boardDir/uploads/avatars";
         if (!is_dir($dir)) mkdir($dir, 0755, true);
 
-        $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
+        $ext = $this->allowedExt(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION), self::IMAGE_EXTS);
         $filename = uniqid('u_') . ".$ext";
         move_uploaded_file($_FILES['file']['tmp_name'], "$dir/$filename");
         
@@ -398,8 +434,11 @@ class App {
 
         // Name Generation
         $rawName = $input['name'] ?? 'file';
-        $ext = pathinfo($rawName, PATHINFO_EXTENSION) ?: pathinfo(parse_url($input['url'], PHP_URL_PATH), PATHINFO_EXTENSION);
-        $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME));
+        $ext = strtolower(pathinfo($rawName, PATHINFO_EXTENSION) ?: pathinfo((string) parse_url($input['url'], PHP_URL_PATH), PATHINFO_EXTENSION));
+        $cleanName = preg_replace('/[^a-z0-9-]/i', '-', pathinfo($rawName, PATHINFO_FILENAME)) ?: 'file';
+        // Keep attachments of any type, but never with an extension a server could execute.
+        if (!in_array($ext, self::UPLOAD_EXTS, true)) { $cleanName .= $ext !== '' ? '-' . preg_replace('/[^a-z0-9]/', '', $ext) : ''; $ext = 'bin'; }
+        if (!empty($input['attachmentId'])) $input['attachmentId'] = preg_replace('/[^a-z0-9]/i', '', $input['attachmentId']);
         
         if (!empty($input['attachmentId'])) {
             $filename = strtolower("$cleanName-{$input['attachmentId']}.$ext");
@@ -409,13 +448,16 @@ class App {
             while(file_exists("$uploadDir/$filename")) $filename = strtolower("$cleanName-" . $counter++ . ".$ext");
         }
 
-        // Curl Download
+        // Curl Download (http and https only: no file://, gopher:// and friends)
+        if (!preg_match('#^https?://#i', (string) $input['url'])) throw new Exception("Only http and https attachments can be imported.");
         $ch = curl_init($input['url']);
         $fp = fopen("$uploadDir/$filename", 'wb');
         curl_setopt_array($ch, [
             CURLOPT_FILE => $fp, CURLOPT_HEADER => 0, CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_USERAGENT => 'Mozilla/5.0 (Beckon-Importer)', CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_FAILONERROR => true
+            CURLOPT_FAILONERROR => true,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
         ]);
         if (!empty($input['cookies'])) curl_setopt($ch, CURLOPT_COOKIE, $input['cookies']);
         
@@ -756,7 +798,10 @@ class App {
             throw new Exception("Device ID mismatch");
         }
         
-        if ($pending['pin'] !== $pin) {
+        if (!hash_equals((string) $pending['pin'], (string) $pin)) {
+            $pending['attempts'] = ($pending['attempts'] ?? 0) + 1;
+            if ($pending['attempts'] >= 5) { @unlink($pendingFile); throw new Exception("Too many wrong PINs. Please request a new one."); }
+            $this->atomicWrite($pendingFile, $pending);
             throw new Exception("Invalid PIN");
         }
         
@@ -950,13 +995,13 @@ class App {
                     $path = "$boardDir/users.json";
                     break;
                 case 'card_md':
-                    if ($id) $path = "$boardDir/$id.md";
+                    if ($this->isCardId($id)) $path = "$boardDir/$id.md";
                     break;
                 case 'card_meta':
-                    if ($id) $path = "$boardDir/$id.json";
+                    if ($this->isCardId($id)) $path = "$boardDir/$id.json";
                     break;
                 case 'upload':
-                    if ($id) $path = "$boardDir/uploads/$id";
+                    if ($id && $id === basename($id) && $id[0] !== '.') $path = "$boardDir/uploads/$id";
                     break;
             }
             
@@ -1025,19 +1070,19 @@ class App {
                     $path = "$boardDir/users.json";
                     break;
                 case 'card_md':
-                    if ($id) $path = "$boardDir/$id.md";
+                    if ($this->isCardId($id)) $path = "$boardDir/$id.md";
                     break;
                 case 'card_meta':
-                    if ($id) $path = "$boardDir/$id.json";
+                    if ($this->isCardId($id)) $path = "$boardDir/$id.json";
                     break;
                 case 'upload':
-                    if ($id) {
+                    if ($id && $id === basename($id) && $id[0] !== '.' && in_array(strtolower(pathinfo($id, PATHINFO_EXTENSION)), self::UPLOAD_EXTS, true)) {
                         if (!is_dir("$boardDir/uploads")) mkdir("$boardDir/uploads", 0755, true);
                         $path = "$boardDir/uploads/$id";
                     }
                     break;
                 case 'delete_card':
-                    if ($id) {
+                    if ($this->isCardId($id)) {
                         @unlink("$boardDir/$id.md");
                         @unlink("$boardDir/$id.json");
                         $results[] = ['board' => $boardId, 'type' => $type, 'id' => $id, 'status' => 'deleted'];
@@ -1160,32 +1205,40 @@ class App {
     }
 
     protected function actionRenameBoard($input, $boardId, $boardDir) {
-        $newTitle = $input['title'];
+        $newTitle = trim((string) ($input['title'] ?? ''));
         $newSlug = $this->slugify($newTitle);
         if (!$newSlug) throw new Exception("Invalid title");
+        if (!is_file("$boardDir/layout.json")) throw new Exception("Board not found");
+        $newPath = $this->boardsDir . '/' . $newSlug;
+        if ($boardId !== $newSlug && file_exists($newPath)) throw new Exception("A board named \"$newSlug\" already exists");
 
-        $layout = json_decode(file_get_contents("$boardDir/layout.json"), true);
-        $layout['title'] = $newTitle;
-        $this->atomicWrite("$boardDir/layout.json", $layout);
-
-        if ($boardId !== $newSlug) {
-            $newPath = $this->boardsDir . '/' . $newSlug;
-            if (file_exists($newPath)) throw new Exception("Board exists");
-
-            // Fix MD links
-            foreach (glob("$boardDir/*.md") as $file) {
+        return $this->withBoardLock($boardId, function () use ($boardId, $boardDir, $newTitle, $newSlug, $newPath) {
+            $layout = json_decode(file_get_contents("$boardDir/layout.json"), true) ?? [];
+            $layout['title'] = $newTitle;
+            if ($boardId === $newSlug) {
+                $this->atomicWrite("$boardDir/layout.json", $layout);
+                $this->searchIndex->updateBoard($boardId, $boardId, $newTitle);
+                return ['status' => 'updated', 'id' => $boardId, 'name' => $newTitle];
+            }
+            // Upload links live in card text, card covers and member avatars.
+            $old = "boards/$boardId/uploads/"; $new = "boards/$newSlug/uploads/";
+            $layout = json_decode(str_replace($old, $new, json_encode($layout, JSON_UNESCAPED_SLASHES)), true);
+            $this->atomicWrite("$boardDir/layout.json", $layout);
+            foreach (array_merge(glob("$boardDir/*.md") ?: [], glob("$boardDir/*.json") ?: []) as $file) {
                 $c = file_get_contents($file);
-                $newC = str_replace("boards/$boardId/uploads/", "boards/$newSlug/uploads/", $c);
+                $newC = str_replace([$old, str_replace('/', '\\/', $old)], [$new, str_replace('/', '\\/', $new)], $c);
                 if ($c !== $newC) $this->atomicWrite($file, $newC);
             }
+            @unlink("$boardDir/lock");
             rename($boardDir, $newPath);
+            $this->searchIndex->updateBoard($boardId, $newSlug, $newTitle);
             return ['status' => 'renamed', 'id' => $newSlug, 'name' => $newTitle];
-        }
-        return ['status' => 'updated', 'id' => $boardId, 'name' => $newTitle];
+        });
     }
 
     protected function actionLoad($input, $boardId, $boardDir) {
         $layoutPath = "$boardDir/layout.json";
+        if (!$boardDir || !is_file($layoutPath)) throw new Exception("Board not found");
         
         // Use a shared lock for reading to prevent reading while a write is happening
         $fp = fopen($layoutPath, 'r');
@@ -1222,8 +1275,7 @@ class App {
     }
 
     protected function actionGetCard($input, $boardId, $boardDir) {
-        $id = $input['id'];
-        if (!$id) throw new Exception("No ID");
+        $id = $this->cardId($input['id'] ?? '');
 
         $description = @file_get_contents("$boardDir/$id.md") ?: '';
         $meta = json_decode(@file_get_contents("$boardDir/$id.json"), true) ?? [];
@@ -1244,7 +1296,8 @@ class App {
     }
 
     protected function actionLoadCardMeta($input, $boardId, $boardDir) {
-        $meta = json_decode(@file_get_contents("$boardDir/{$input['id']}.json"), true) ?? [];
+        $id = $this->cardId($input['id'] ?? '');
+        $meta = json_decode(@file_get_contents("$boardDir/$id.json"), true) ?? [];
         return array_merge(['comments' => [], 'activity' => [], 'revisions' => [], 'assigned_to' => []], $meta);
     }
 
@@ -1267,11 +1320,13 @@ class App {
             
             // 2. Write safely inside the lock
             $this->atomicWrite("$boardDir/layout.json", $input);
-            return ['status' => 'saved', 'version' => 1];
+            return ['status' => 'saved', 'version' => 1, 'hash' => md5_file("$boardDir/layout.json")];
         });
     }
 
     protected function actionSaveCard($input, $boardId, $boardDir) {
+        $this->cardId($input['id'] ?? '');
+        if (!is_dir($boardDir)) throw new Exception("Board not found");
         $this->atomicWrite("$boardDir/{$input['id']}.md", $input['description'] ?? '');
         
         // Update search index
@@ -1281,6 +1336,8 @@ class App {
     }
 
     protected function actionSaveCardMeta($input, $boardId, $boardDir) {
+        $this->cardId($input['id'] ?? '');
+        if (!is_dir($boardDir)) throw new Exception("Board not found");
         $meta = $input['meta'];
 
         if (isset($input['title'])) $meta['title'] = $input['title'];
@@ -1301,6 +1358,7 @@ class App {
         $userId = $input['user_id'] ?? null;
 
         if (!$cardId || !$commentId || !$emoji || !$userId) throw new Exception("Missing parameters");
+        $cardId = $this->cardId($cardId);
 
         // Load meta
         $metaPath = "$boardDir/$cardId.json";
@@ -1368,16 +1426,17 @@ class App {
     }
 
     protected function actionMoveCardToBoard($input, $boardId, $boardDir) {
-        $targetId = $input['target_board'];
+        $targetId = $this->slugify($input['target_board'] ?? '');
+        if (!$targetId || !is_dir($this->getBoardPath($targetId))) throw new Exception("Target board not found");
+        if ($targetId === $boardId) throw new Exception("The card is already on that board");
+        $this->cardId($input['id'] ?? '');
 
-        // Canonical Locking Order (Deadlock Prevention)
-        $firstLock  = ($boardId < $targetId) ? $boardId : $targetId;
-        $secondLock = ($boardId < $targetId) ? $targetId : $boardId;
+        // Canonical locking order, so two opposite moves can't wait on each other forever.
+        $firstLock  = strcmp($boardId, $targetId) < 0 ? $boardId : $targetId;
+        $secondLock = $firstLock === $boardId ? $targetId : $boardId;
 
-        // Lock Source Board
-        return $this->withBoardLock($boardId, function() use ($input, $boardId, $boardDir, $targetId) {
-            // Lock Target Board (Nested Lock)
-            return $this->withBoardLock($targetId, function() use ($input, $boardId, $boardDir, $targetId) {
+        return $this->withBoardLock($firstLock, function() use ($input, $boardId, $boardDir, $targetId, $secondLock) {
+            return $this->withBoardLock($secondLock, function() use ($input, $boardId, $boardDir, $targetId) {
                 
                 // --- Start Transaction Logic ---
                 $cardId = $input['id'];
@@ -1465,7 +1524,7 @@ class App {
     }
 
     protected function actionDeleteCard($input, $boardId, $boardDir) {
-        $id = $input['id'];
+        $id = $this->cardId($input['id'] ?? '');
         if (file_exists("$boardDir/$id.md")) unlink("$boardDir/$id.md");
         if (file_exists("$boardDir/$id.json")) unlink("$boardDir/$id.json");
         
@@ -1481,8 +1540,8 @@ class App {
         if (!is_dir($dir)) mkdir($dir, 0755, true);
 
         $name = pathinfo($_FILES['file']['name'], PATHINFO_FILENAME);
-        $ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
-        $clean = $this->slugify($name);
+        $ext = $this->allowedExt(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
+        $clean = $this->slugify($name) ?: 'file';
         
         $filename = "$clean.$ext";
         $counter = 1;
@@ -1825,6 +1884,12 @@ class SearchIndex {
         $this->db->prepare("DELETE FROM card_index WHERE board_id = ?")->execute([$boardId]);
     }
 
+    public function updateBoard($oldId, $newId, $newName) {
+        if (!$this->db) return;
+        $this->db->prepare("UPDATE card_index SET board_id = ?, board_name = ? WHERE board_id = ?")->execute([$newId, $newName, $oldId]);
+        $this->db->prepare("UPDATE cards_fts SET board_id = ? WHERE board_id = ?")->execute([$newId, $oldId]);
+    }
+
     public function updateBoardName($boardId, $newName) {
         if (!$this->db) return;
         $this->db->prepare("UPDATE card_index SET board_name = ? WHERE board_id = ?")->execute([$newName, $boardId]);
@@ -2020,7 +2085,7 @@ class Updater {
      */
     public function install(?callable $preCheck = null) {
         if ($this->isGitCheckout()) throw new Exception("This is a git checkout. Update it with git pull instead.");
-        $summary = $this->check(false, true);
+        $summary = $this->check(true);
         if (!empty($summary['error']) && empty($summary['latest'])) throw new Exception("Update check failed: " . $summary['error']);
         if (!$summary['update_available']) throw new Exception("Already up to date (v" . BECKON_VERSION . ").");
         $state = $this->readState();
@@ -3075,10 +3140,30 @@ const md = (() => {
     }
 
     return {
-        render: (text) => blocks(String(text || '').replace(/\r\n?/g, '\n').split('\n'), 0),
-        inline: (text) => inline(String(text || '')),
+        render: (text) => sanitizeHtml(blocks(String(text || '').replace(/\r\n?/g, '\n').split('\n'), 0)),
+        inline: (text) => sanitizeHtml(inline(String(text || ''))),
     };
 })();
+
+/* Raw HTML stays allowed in cards (it always was), minus anything that can run script:
+   script-bearing elements, on* handlers, and javascript:/vbscript:/data: URLs (data: images excepted). */
+function sanitizeHtml(html) {
+    if (!/[<&]/.test(html)) return html;
+    const t = document.createElement('template'); t.innerHTML = html;
+    const DROP = 'script,style,iframe,frame,frameset,object,embed,applet,link,meta,base,form,noscript,template,portal,math';
+    t.content.querySelectorAll(DROP).forEach((n) => n.remove());
+    const bad = (v) => /^(javascript|vbscript|data):/i.test(String(v).replace(/[\u0000-\u0020\u007f-\u009f]/g, ''));
+    t.content.querySelectorAll('*').forEach((el) => {
+        for (const a of Array.from(el.attributes)) {
+            const n = a.name.toLowerCase();
+            if (n.startsWith('on') || n === 'srcdoc' || n === 'formaction' || n === 'action') { el.removeAttribute(a.name); continue; }
+            if (['href', 'src', 'xlink:href', 'poster', 'background', 'cite', 'srcset'].includes(n) && bad(a.value) && !(n === 'src' && el.tagName === 'IMG' && /^data:image\//i.test(a.value.trim()))) el.removeAttribute(a.name);
+        }
+        if (el.tagName === 'INPUT' && el.type !== 'checkbox') el.remove();
+        if (el.tagName === 'A' && el.getAttribute('target') === '_blank') el.setAttribute('rel', 'noopener');
+    });
+    return t.innerHTML;
+}
 
 /* ---------- Dates ---------- */
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -3145,7 +3230,7 @@ const dialog = {
                 </div>`, { dismiss: false, focus: kind === 'prompt' ? '#dlg-input' : '[data-r="ok"]' });
             const finish = (v) => { closeLayer(name); resolve(v); };
             on(el, 'click', '[data-r]', (e, t) => finish(t.dataset.r === 'ok' ? (kind === 'prompt' ? $('#dlg-input', el).value : true) : (kind === 'prompt' ? null : false)));
-            el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(kind === 'prompt' ? $('#dlg-input', el).value : true); } if (e.key === 'Escape') { e.stopPropagation(); finish(kind === 'prompt' ? null : false); } });
+            el.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !(e.target.matches('button') && !e.target.matches('[data-r="ok"]'))) { e.preventDefault(); finish(kind === 'prompt' ? $('#dlg-input', el).value : true); } if (e.key === 'Escape') { e.stopPropagation(); finish(kind === 'prompt' ? null : false); } });
             el._opts.onClose = () => finish(kind === 'prompt' ? null : false);
         });
     },
@@ -3196,8 +3281,12 @@ function bindCombo(wrap, opts) {
         else if (e.key === 'Tab') close();
     });
     input.addEventListener('blur', () => { setTimeout(() => { close(); if (opts.strict !== false) input.value = labelOf(value); }, 120); });
-    const onScroll = (e) => { if (list && !list.contains(e.target)) place(); };
-    window.addEventListener('scroll', onScroll, true); window.addEventListener('resize', place);
+    const onScroll = (e) => { if (!wrap.isConnected) return detach(); if (list && !list.contains(e.target)) place(); };
+    const onResize = () => { if (!wrap.isConnected) return detach(); place(); };
+    const detach = () => { window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', onResize); close(); };
+    window.addEventListener('scroll', onScroll, true); window.addEventListener('resize', onResize);
+    const gc = new MutationObserver(() => { if (!wrap.isConnected) { detach(); gc.disconnect(); } });
+    gc.observe(document.body, { childList: true, subtree: true });
     return {
         get value() { return value; },
         set(v) { value = v ?? ''; input.value = labelOf(value); },
@@ -3236,6 +3325,8 @@ const S = {
     searchStats: { available: false, card_count: 0 },
 };
 let lastSaveTime = 0;
+const ownLayoutHashes = [];           // hashes of layout.json as written by this tab's own saves
+let layoutSavesInFlight = [];
 let eventSource = null;
 let sseUnavailable = false;
 
@@ -3264,7 +3355,13 @@ async function apiUpload(action, file, board = S.boardId) {
 const saveLocal = () => lsSet(`beckon_${S.boardId}`, S.board);
 function persistLayout() {
     saveLocal(); lastSaveTime = Date.now();
-    api('save_layout', S.board).then(() => { const b = S.boards.find((b) => b.id === S.boardId); if (b) b.name = S.board.title; }).catch(() => {});
+    const req = api('save_layout', S.board).then((r) => {
+        if (r && r.hash) { ownLayoutHashes.push(r.hash); if (ownLayoutHashes.length > 20) ownLayoutHashes.shift(); }
+        const b = S.boards.find((b) => b.id === S.boardId); if (b) b.name = S.board.title;
+        return r;
+    });
+    layoutSavesInFlight.push(req);
+    req.catch(() => {}).finally(() => { layoutSavesInFlight = layoutSavesInFlight.filter((x) => x !== req); });
 }
 function persistCardDesc(card) { if (card && card.id) { saveLocal(); lastSaveTime = Date.now(); api('save_card', { id: card.id, description: card.description || '' }).catch(() => {}); } }
 function persistMeta(id, meta) { if (id) { lastSaveTime = Date.now(); api('save_card_meta', { id, meta }).catch(() => {}); } }
@@ -3280,10 +3377,28 @@ function connectSSE() {
     if (eventSource) { eventSource.close(); eventSource = null; }
     if (!S.boardId || !window.EventSource || sseUnavailable) return;
     eventSource = new EventSource(`?action=events&board=${encodeURIComponent(S.boardId)}`);
-    eventSource.addEventListener('board_updated', async () => {
-        if (Date.now() - lastSaveTime < 2000) return;
-        if (S.active) return;
-        await loadData(); renderBoard();
+    eventSource.addEventListener('board_updated', async (ev) => {
+        // Our own saves come back as events too. Wait for any save still in flight, then skip
+        // the event only if the layout it reports is one this tab wrote.
+        let hash = null; try { hash = JSON.parse(ev.data).hash || null; } catch (e) {}
+        if (layoutSavesInFlight.length) await Promise.allSettled(layoutSavesInFlight);
+        if (hash && ownLayoutHashes.includes(hash)) return;
+        if (!hash && Date.now() - lastSaveTime < 2000) return;
+        if (S.drag) return;
+        // Don't pull the board out from under someone typing a list title or a new card.
+        const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#board') && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+        if (!S.active && typing) { S.pendingReload = true; return; }
+        if (!S.active) { await loadData(); renderBoard(); return; }
+        // A card is open: take the newer board, but keep this card's in-progress state and
+        // re-point the window at the fresh card object, so later saves don't send a stale board.
+        const mine = S.active.card;
+        await loadData();
+        if (!S.active || S.active.card !== mine) return;
+        const at = locateCard(mine.id);
+        if (!at) { toast('This card was moved or removed elsewhere. Your edits to its text are still saved.', 'info'); renderBoard(); return; }
+        Object.assign(at.card, mine);
+        S.active.card = at.card; S.active.l = at.l; S.active.c = at.c;
+        renderBoard(); cwUpdateHead(); cwRenderSide();
     });
     eventSource.addEventListener('timeout', () => { eventSource.close(); connectSSE(); });
     // The server has no worker to spare for a stream (PHP's built-in server
@@ -3307,7 +3422,8 @@ function refreshDescFlags(card) {
     const txt = card.description || '';
     card.hasDesc = txt.trim().length > 0;
     card.hasAtt = txt.indexOf('/uploads/') !== -1;
-    const total = (txt.match(/- \[[ xX]\]/g) || []).length, done = (txt.match(/- \[[xX]\]/g) || []).length;
+    const plain = txt.replace(/^\s*(```|~~~)[\s\S]*?^\s*\1\s*$/gm, '');
+    const total = (plain.match(/^\s*(?:>\s*)*(?:[-*+]|\d{1,9}[.)])\s+\[[ xX]\]\s+\S/gm) || []).length, done = (plain.match(/^\s*(?:>\s*)*(?:[-*+]|\d{1,9}[.)])\s+\[[xX]\]\s+\S/gm) || []).length;
     if (total > 0) card.descStats = { total, done }; else delete card.descStats;
 }
 
@@ -3563,7 +3679,7 @@ function openUpdateDialog() {
 
 /* ---------- Board ---------- */
 function cardHtml(card, l, c) {
-    const st = taskStats(card), labels = card.labels || [], hov = S.hover && S.hover.l === l && S.hover.c === c;
+    const st = taskStats(card), labels = card.labels || [], hov = S.hover && String(S.hover.id) === String(card.id);
     const meta = [];
     if (card.hasDesc) meta.push(`<span title="Has description">${icon('text', 'xs')}</span>`);
     if (card.hasAtt) meta.push(`<span title="Has attachment">${icon('paperclip', 'xs')}</span>`);
@@ -3609,6 +3725,7 @@ function bindBoard() {
         if (t.closest('[data-add-list]')) { addList(); return; }
         const lm = t.closest('[data-list-menu]'); if (lm) { stop(e); showListCtx(e.clientX, e.clientY, +lm.closest('.col').dataset.l); }
     });
+    board.addEventListener('focusout', () => { setTimeout(async () => { if (!S.pendingReload || S.active || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#board') && /INPUT|TEXTAREA/.test(document.activeElement.tagName))) return; S.pendingReload = false; await loadData(); renderBoard(); }, 250); });
     board.addEventListener('contextmenu', (e) => { const card = e.target.closest('.card'); if (card) { e.preventDefault(); showCtx(e.clientX, e.clientY, +card.dataset.l, +card.dataset.c); } });
     board.addEventListener('keydown', (e) => {
         if (e.target.matches('[data-composer]')) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitComposer(); } if (e.key === 'Escape') { S.composer = null; renderBoard(); } }
@@ -3623,7 +3740,7 @@ function bindBoard() {
     board.addEventListener('touchend', endPress); board.addEventListener('touchmove', endPress, { passive: true }); board.addEventListener('touchcancel', endPress);
     bindDnD(board);
 }
-function setHover(l, c, el) { $$('.card.hover').forEach((x) => x.classList.remove('hover')); if (l === null) { S.hover = null; return; } S.hover = { l, c }; el.classList.add('hover'); }
+function setHover(l, c, el) { $$('.card.hover').forEach((x) => x.classList.remove('hover')); if (l === null) { S.hover = null; return; } S.hover = { l, c, id: el.dataset.id }; el.classList.add('hover'); }
 function commitComposer() {
     const ta = $('[data-composer]'); if (!ta) return;
     const title = ta.value.trim(); const l = S.composer;
@@ -3631,12 +3748,23 @@ function commitComposer() {
     else { S.composer = null; renderBoard(); }
 }
 function addList() { S.board.lists.push({ id: uid(), title: 'New list', cards: [] }); persistLayout(); renderBoard(); const inputs = $$('[data-list-title]'); const last = inputs[inputs.length - 1]; if (last) { last.focus(); last.select(); } const wrap = document.getElementById('board-wrap'); wrap.scrollLeft = wrap.scrollWidth; }
+/* Where a card sits right now. Positions shift under an open dialog when the board reloads, so
+   anything that awaits a confirm looks the card up again by id before changing the board. */
+function locateCard(id) {
+    const same = (x) => String(x.id) === String(id);
+    for (let l = 0; l < S.board.lists.length; l++) { const c = S.board.lists[l].cards.findIndex(same); if (c > -1) return { l, c, card: S.board.lists[l].cards[c] }; }
+    const a = (S.board.archive || []).findIndex(same); if (a > -1) return { l: 'archive', c: a, card: S.board.archive[a] };
+    return null;
+}
+function removeCardFromBoard(id) { const at = locateCard(id); if (!at) return null; (at.l === 'archive' ? S.board.archive : S.board.lists[at.l].cards).splice(at.c, 1); return at.card; }
 async function deleteList(l) {
     const list = S.board.lists[l]; if (!list) return;
     const n = list.cards.length;
     if (!await dialog.confirm({ title: `Delete "${list.title}"?`, message: n ? `${n} card${n === 1 ? '' : 's'} in this list will be deleted too.` : 'This list is empty.', ok: 'Delete list', danger: true })) return;
-    list.cards.forEach((c) => api('delete_card', { id: c.id }).catch(() => {}));
-    S.board.lists.splice(l, 1); persistLayout(); renderBoard();
+    const at = S.board.lists.findIndex((x) => x.id === list.id); if (at < 0) return;
+    const gone = S.board.lists.splice(at, 1)[0];
+    gone.cards.forEach((c) => api('delete_card', { id: c.id }).catch(() => {}));
+    persistLayout(); renderBoard();
 }
 function addCard(l, title) {
     const now = new Date().toISOString();
@@ -3657,13 +3785,14 @@ function logActivity(cardId, text) { api('load_card_meta', { id: cardId }).then(
 async function archiveCard(l, c, skipConfirm = false) {
     const card = S.board.lists[l].cards[c]; if (!card) return;
     if (!skipConfirm && !await dialog.confirm({ title: `Archive "${card.title}"?`, message: 'You can restore it later from the archive.', ok: 'Archive' })) return;
-    S.board.archive = S.board.archive || []; S.board.archive.unshift(card); S.board.lists[l].cards.splice(c, 1);
+    const live = removeCardFromBoard(card.id); if (!live) return;
+    S.board.archive = S.board.archive || []; S.board.archive.unshift(live);
     persistLayout(); logActivity(card.id, 'Archived'); S.hover = null; renderBoard(); renderTopbar(); toast('Card archived');
 }
 async function deleteCard(l, c) {
     const card = S.board.lists[l].cards[c]; if (!card) return;
     if (!await dialog.confirm({ title: `Delete "${card.title}"?`, message: 'The card, its description, comments and history will be removed permanently.', ok: 'Delete card', danger: true })) return;
-    S.board.lists[l].cards.splice(c, 1); persistLayout(); api('delete_card', { id: card.id }).catch(() => {}); S.hover = null; renderBoard(); toast('Card deleted');
+    if (!removeCardFromBoard(card.id)) return; persistLayout(); api('delete_card', { id: card.id }).catch(() => {}); S.hover = null; renderBoard(); toast('Card deleted');
 }
 
 /* ---------- Drag and drop ---------- */
@@ -3826,9 +3955,9 @@ async function openCard(l, c) {
         S.active.original = card.description;
         S.active.meta = Object.assign({ comments: [], activity: [], revisions: [], assigned_to: [], checklists: [] }, res.meta || {});
         S.active.loading = false;
-        const ta = $('#cw-desc'); if (ta) ta.value = card.description;
+        const ta = $('#cw-desc'); if (ta) { ta.value = card.description; ta.readOnly = false; }
         cwUpdatePreview(); cwUpdateStats(); cwRenderActivity(); cwRenderSide(); cwUpdateHead();
-    } catch (e) { if (S.active) S.active.loading = false; toast('Could not load card details', 'err'); }
+    } catch (e) { if (S.active && S.active.card === card) { S.active.failed = true; toast('Could not load this card. It is read-only until you reopen it.', 'err'); } }
 }
 function closeCard() {
     const a = S.active; if (!a) return;
@@ -3869,7 +3998,7 @@ function renderCardWindow() {
                     <div class="cw-panes" id="cw-panes">
                         <div class="pane pane-editor" id="pane-editor">
                             <div class="pane-head"><span>Markdown</span><span class="stat" id="cw-stats"></span><span class="spacer"></span><label title="Insert an image">${icon('image', 'sm')} Image<input type="file" accept="image/*" class="hidden" id="cw-img"></label></div>
-                            <textarea id="cw-desc" class="scroll" placeholder="Write in Markdown. Type : for emoji, - [ ] for tasks, drop an image to attach it." spellcheck="true">${esc(a.card.description || '')}</textarea>
+                            <textarea id="cw-desc" class="scroll" placeholder="Write in Markdown. Type : for emoji, - [ ] for tasks, drop an image to attach it." spellcheck="true"${a.loading ? ' readonly' : ''}>${esc(a.card.description || '')}</textarea>
                         </div>
                         <div class="pane-divider" id="pane-divider"></div>
                         <div class="pane pane-preview" id="pane-preview">
@@ -3974,7 +4103,7 @@ function restoreArchivedCard() {
     cwUpdateHead(); cwRenderActivity(); cwRenderSide(); toast('Card restored');
 }
 async function cwUploadImage(file) {
-    if (!file) return;
+    if (!file || !cardReady()) return;
     try {
         const res = await apiUpload('upload', file);
         if (!res.url) throw new Error('No URL returned');
@@ -3985,9 +4114,13 @@ async function cwUploadImage(file) {
     } catch (e) { toast('Upload failed: ' + e.message, 'err'); }
 }
 function toggleTaskAt(previewEl, checkbox) {
-    const all = $$('input[type="checkbox"]', previewEl); const idx = all.indexOf(checkbox); let n = 0;
-    const ta = $('#cw-desc'); if (!ta || S.ui.revision > -1) return;
-    ta.value = ta.value.replace(/^(\s*[-*+]\s+\[)([ xX])(\])/gm, (m, p, s, sf) => n++ === idx ? p + (s === ' ' ? 'x' : ' ') + sf : m);
+    const ta = $('#cw-desc'); if (!ta || S.ui.revision > -1 || ta.readOnly) return;
+    const li = checkbox.closest('li[data-line]'); if (!li) return;
+    const lines = ta.value.split('\n'); const n = parseInt(li.dataset.line, 10);
+    if (!(n >= 0 && n < lines.length)) return;
+    const next = lines[n].replace(/^(\s*(?:>\s*)*(?:[-*+]|\d{1,9}[.)])\s+\[)([ xX])(\])/, (m, p, s, sf) => p + (s === ' ' ? 'x' : ' ') + sf);
+    if (next === lines[n]) return;
+    lines[n] = next; ta.value = lines.join('\n');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
@@ -4067,7 +4200,7 @@ function cwRenderSide() {
             </div></div>
         </div></div>`;
     const side = $('#cw-side', el).firstElementChild;
-    const persist = () => { persistMeta(card.id, meta); };
+    const persist = () => { if (cardReady()) persistMeta(card.id, meta); };
     on(side, 'click', '[data-side-close]', () => { S.ui.sidebar = false; cwApplyView(); });
     on(side, 'click', '[data-unassign]', (e, t) => { card.assignees = (card.assignees || []).filter((x) => x !== t.dataset.unassign); persistLayout(); cwRenderSide(); });
     on(side, 'click', '[data-join]', () => { card.assignees = card.assignees || []; card.assignees.push(me); persistLayout(); cwRenderSide(); });
@@ -4087,8 +4220,8 @@ function cwRenderSide() {
     on(side, 'click', '[data-side]', async (e, t) => {
         const act = t.dataset.side;
         if (act === 'wp') openWpModal({ card, description: card.description || '' });
-        else if (act === 'archive') { if (!await dialog.confirm({ title: `Archive "${card.title}"?`, ok: 'Archive' })) return; S.board.archive = S.board.archive || []; S.board.archive.unshift(card); S.board.lists[a.l].cards.splice(a.c, 1); meta.activity.unshift({ text: 'Archived', date: new Date().toISOString() }); persist(); S.active.original = card.description || ''; closeCard(); toast('Card archived'); }
-        else if (act === 'delete') { if (!await dialog.confirm({ title: `Delete "${card.title}"?`, message: 'This removes the card and all of its history.', ok: 'Delete card', danger: true })) return; if (a.l === 'archive') S.board.archive.splice(a.c, 1); else S.board.lists[a.l].cards.splice(a.c, 1); api('delete_card', { id: card.id }).catch(() => {}); S.active.loading = true; closeCard(); toast('Card deleted'); }
+        else if (act === 'archive') { if (!await dialog.confirm({ title: `Archive "${card.title}"?`, ok: 'Archive' })) return; const live = removeCardFromBoard(S.active.card.id) || card; S.board.archive = S.board.archive || []; S.board.archive.unshift(live); meta.activity.unshift({ text: 'Archived', date: new Date().toISOString() }); persist(); S.active.original = card.description || ''; closeCard(); toast('Card archived'); }
+        else if (act === 'delete') { if (!await dialog.confirm({ title: `Delete "${card.title}"?`, message: 'This removes the card and all of its history.', ok: 'Delete card', danger: true })) return; removeCardFromBoard(S.active.card.id); api('delete_card', { id: card.id }).catch(() => {}); S.active.loading = true; closeCard(); toast('Card deleted'); }
     });
 }
 function updateChecklistStats() {
@@ -4168,8 +4301,9 @@ function commentHtml(c) {
             <button class="react add" data-react-add="${esc(c.id)}" title="Add reaction">${icon('smile', 'sm')}</button>
         </div></div></div>`;
 }
+function cardReady() { const a = S.active; if (a && a.loading) { toast(a.failed ? 'This card did not load, so changes are off. Close and reopen it.' : 'Still loading this card…', 'info'); return false; } return !!a; }
 function addComment(text) {
-    const a = S.active; text = (text || '').trim(); if (!a || !text) return;
+    const a = S.active; text = (text || '').trim(); if (!a || !text || !cardReady()) return;
     a.meta.comments.unshift({ id: uid(), text, date: new Date().toISOString(), user_id: S.user.id || null, user: { name: S.user.name, initials: S.user.initials }, reactions: [] });
     a.card.commentCount = (a.card.commentCount || 0) + 1;
     persistMeta(a.card.id, a.meta); persistLayout(); cwRenderActivity();
@@ -4493,12 +4627,24 @@ window.addEventListener('keydown', (e) => {
     if (typing) return;
     if (e.key === '/' && !topLayer()) { e.preventDefault(); openSearch(); return; }
     if (topLayer() || S.ui.pop || document.getElementById('overview')) return;
-    if (S.hover) {
-        if (e.key === 'Enter') { e.preventDefault(); openCard(S.hover.l, S.hover.c); }
-        else if (e.key.toLowerCase() === 'c') { e.preventDefault(); archiveCard(S.hover.l, S.hover.c); }
+    if (S.hover && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const at = locateCard(S.hover.id); if (!at || at.l === 'archive') return;
+        if (e.key === 'Enter') { e.preventDefault(); openCard(at.l, at.c); }
+        else if (e.key.toLowerCase() === 'c') { e.preventDefault(); archiveCard(at.l, at.c); }
     }
 });
 window.addEventListener('resize', debounce(() => { if (S.active) cwApplyView(); }, 120));
+window.addEventListener('pagehide', () => {
+    const a = S.active; if (!a || a.loading || !a.card.id) return;
+    const send = (action, body) => { try { fetch(`?action=${action}&board=${encodeURIComponent(S.boardId)}`, { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch (e) {} };
+    if ((a.card.description || '') === (a.original || '')) return;
+    send('save_card', { id: a.card.id, description: a.card.description || '' });
+    const meta = JSON.parse(JSON.stringify(a.meta));
+    meta.revisions = [{ id: uid(), date: new Date().toISOString(), text: a.original || '', user: S.user.name }].concat(meta.revisions || []).slice(0, 50);
+    meta.activity = [{ text: 'Modified description', date: new Date().toISOString() }].concat(meta.activity || []);
+    send('save_card_meta', { id: a.card.id, meta });
+    a.original = a.card.description || '';
+});
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (!document.documentElement.getAttribute('data-theme')) renderTopbar(); });
 
 /* ---------- Boot ---------- */
