@@ -51,6 +51,15 @@ class App {
     private function writeLayout($path, array $layout) {
         $cur = json_decode(@file_get_contents($path), true);
         $layout['rev'] = (int) ($cur['rev'] ?? 0) + 1;
+        // v1 saved a copy of the members inside layout.json. Keep any that users.json lacks
+        // before dropping the copy, so no install loses a member on its first 2.0 save.
+        if (!empty($layout['users']) && is_array($layout['users'])) {
+            $usersPath = dirname($path) . '/users.json';
+            $known = json_decode(@file_get_contents($usersPath), true);
+            $known = is_array($known) ? $known : [];
+            $missing = array_diff_key($layout['users'], $known);
+            if ($missing) $this->atomicWrite($usersPath, (object) ($known + $missing));
+        }
         unset($layout['users'], $layout['baseRev']);
         $this->atomicWrite($path, $layout);
         return $layout['rev'];
